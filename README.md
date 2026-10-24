@@ -1,4 +1,4 @@
-# FNIRSI DLA-16 plus driver for bitoscope
+# FNIRSI DLA driver for bitoscope
 
 Driver for the FNIRSI DLA USB logic analyzers, for use with the bitoscope host.
 
