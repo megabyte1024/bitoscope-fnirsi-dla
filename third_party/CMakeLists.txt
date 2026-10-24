@@ -3,7 +3,7 @@
 # The "deps" build: the vendored third-party libraries, compiled ONCE from their git submodules and
 # installed into deps/, so no project build tree compiles them again.
 #
-#   cmake -S third_party -B build-deps -DCMAKE_INSTALL_PREFIX=<repo>/deps
+#   cmake -S third_party -B build-deps                  (installs into <repo>/deps)
 #   cmake --build build-deps --config Debug   --target install
 #   cmake --build build-deps --config Release --target install
 #
@@ -34,8 +34,15 @@ project(bitoscope_fnirsi_dla16_deps NONE)
 
 include(ExternalProject)
 
+get_filename_component(_default_prefix "${CMAKE_CURRENT_SOURCE_DIR}/../deps" ABSOLUTE)
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  get_filename_component(_default_prefix "${CMAKE_CURRENT_SOURCE_DIR}/../deps" ABSOLUTE)
+  set(CMAKE_INSTALL_PREFIX "${_default_prefix}" CACHE PATH "Where the libraries are installed" FORCE)
+endif()
+# WHY: MSBuild reads "%XX" in a path as a hex escape, so a prefix with "%" breaks the compiler command line.
+if(CMAKE_INSTALL_PREFIX MATCHES "%|\\$PWD")
+  message(WARNING
+    "CMAKE_INSTALL_PREFIX '${CMAKE_INSTALL_PREFIX}' holds a variable the shell did not expand "
+    "(%CD% works only in cmd, $PWD only in PowerShell and sh): installing into ${_default_prefix} instead.")
   set(CMAKE_INSTALL_PREFIX "${_default_prefix}" CACHE PATH "Where the libraries are installed" FORCE)
 endif()
 
@@ -68,7 +75,6 @@ set(BUILD_TESTING OFF CACHE BOOL "")
 set(CMAKE_POLICY_DEFAULT_CMP0141 NEW CACHE STRING "")
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>" CACHE STRING "")
 ]=])
-file(APPEND "${_common_cache}" "set(CMAKE_INSTALL_PREFIX \"${CMAKE_INSTALL_PREFIX}\" CACHE PATH \"\")\n")
 if(NOT _multi_config)
   file(APPEND "${_common_cache}" "set(CMAKE_BUILD_TYPE \"${CMAKE_BUILD_TYPE}\" CACHE STRING \"\")\n")
 endif()
@@ -102,7 +108,8 @@ function(bitoscope_add_dep name source_dir own_cache_text)
     SOURCE_DIR "${source_dir}"
     PREFIX "${CMAKE_BINARY_DIR}/ep"
     BINARY_DIR "${CMAKE_BINARY_DIR}/${name}"
-    CMAKE_ARGS -C "${_own_cache}"
+    # WHY: A -D argument, not the -C cache: -C never overrides a cached value, so a changed prefix is lost.
+    CMAKE_ARGS -C "${_own_cache}" "-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}"
     BUILD_COMMAND ${_build_env} ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG> --parallel ${_build_parallel}
     USES_TERMINAL_CONFIGURE ON
     USES_TERMINAL_BUILD ON

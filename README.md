@@ -58,7 +58,7 @@ C:\vcpkg\vcpkg install libusb:x64-windows
 ```sh
 git clone --recursive https://github.com/megabyte1024/bitoscope-fnirsi-dla.git
 cd bitoscope-fnirsi-dla
-cmake -S third_party -B build-deps -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/deps
+cmake -S third_party -B build-deps -DCMAKE_BUILD_TYPE=Release
 cmake --build build-deps --target install
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel $(cmake -P cmake/BitoscopeBuildJobs.cmake)
@@ -66,23 +66,12 @@ cmake --build build --parallel $(cmake -P cmake/BitoscopeBuildJobs.cmake)
 
 ### Windows
 
-Command Prompt:
+Command Prompt or PowerShell:
 
 ```bat
 git clone --recursive https://github.com/megabyte1024/bitoscope-fnirsi-dla.git
 cd bitoscope-fnirsi-dla
-cmake -S third_party -B build-deps -DCMAKE_INSTALL_PREFIX=%CD%/deps
-cmake --build build-deps --config Release --target install
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_CONFIGURATION_TYPES=Release
-cmake --build build --config Release
-```
-
-PowerShell:
-
-```powershell
-git clone --recursive https://github.com/megabyte1024/bitoscope-fnirsi-dla.git
-cd bitoscope-fnirsi-dla
-cmake -S third_party -B build-deps "-DCMAKE_INSTALL_PREFIX=$PWD/deps"
+cmake -S third_party -B build-deps
 cmake --build build-deps --config Release --target install
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_CONFIGURATION_TYPES=Release
 cmake --build build --config Release
