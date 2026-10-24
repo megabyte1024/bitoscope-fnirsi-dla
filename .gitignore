@@ -1,0 +1,4 @@
+build*/
+__pycache__*/
+# Third-party libraries built once from their submodules by the deps build (third_party/CMakeLists.txt)
+deps/
