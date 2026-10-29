@@ -107,7 +107,9 @@ typedef int (*bitoscope_enumerate_fn)(void* user, const bitoscope_connection* co
 
 /* IMPLEMENT: Required: describes the device the SDK found (`found`) in `device`, which the SDK made with its id:
  * its name with bitoscope_set_name() (none: its generic name), optionally its serial number, and its facets with
- * bitoscope_add_logic_analyzer() and the rest; returns BITOSCOPE_OK. It may open the device briefly to ask it.
+ * bitoscope_add_logic_analyzer(device, &analyzer, reply) and the rest; returns BITOSCOPE_OK. A facet the SDK
+ * refuses gives the SDK's reason in `reply`, so returning BITOSCOPE_ERROR then shows it. It may open the device
+ * briefly to ask it.
  * When it cannot, it returns BITOSCOPE_BUSY, BITOSCOPE_NO_PERMISSION, BITOSCOPE_FIRMWARE_LOADING or
  * BITOSCOPE_NOT_SUPPORTED, or another value with its text given by bitoscope_reply_message(reply, ...); what it
  * described is then dropped. The SDK calls it each time the device appears, and before every session. */
@@ -117,7 +119,7 @@ typedef int (*bitoscope_identify_fn)(void* user, const bitoscope_found_device* f
 /* IMPLEMENT: Optional: opens the device for the session, after identify described it in `device`, and keeps it
  * until close. It may set `device`'s name and serial number again (read from the opened device); its facets are
  * identify's. `*session` starts as your driver's `user`: set it to what the functions of the device's facets
- * (capture, start, apply_properties, the generator's) get as their first argument, and close frees. Returns
+ * (capture, prepare, apply_during_capture, the generator's) get as their first argument, and close frees. Returns
  * BITOSCOPE_OK, or a value as identify does. While it works it may report progress with
  * bitoscope_report_progress(progress, ...) (valid during the call): the host shows each report and waits on.
  * NULL: those functions get your driver's `user`, and your capture opens the device. */
@@ -205,7 +207,53 @@ typedef struct bitoscope_device_bytes {
   uint32_t stride_bytes;
 } bitoscope_device_bytes;
 
-/* IMPLEMENT: One property's value (properties, below): what a capture and an apply function receive. Which of
+/* IMPLEMENT: A property's type. */
+#define BITOSCOPE_PROPERTY_INTEGER 0     /* IMPLEMENT: an int64 */
+#define BITOSCOPE_PROPERTY_DECIMAL 1     /* IMPLEMENT: fixed point: an int64 with `digits` decimals (1.60 V is 160) */
+#define BITOSCOPE_PROPERTY_BOOLEAN 2     /* IMPLEMENT: on or off */
+#define BITOSCOPE_PROPERTY_ENUMERATION 3 /* IMPLEMENT: one of a list of items: names, or numbers in the unit */
+
+/* IMPLEMENT: What a value measures: only the quantity, never milli or mega - the host chooses the prefix. */
+#define BITOSCOPE_UNIT_NONE 0
+#define BITOSCOPE_UNIT_VOLT 1
+#define BITOSCOPE_UNIT_SECOND 2 /* IMPLEMENT: a time or a period */
+#define BITOSCOPE_UNIT_HERTZ 3
+#define BITOSCOPE_UNIT_PERCENT 4
+#define BITOSCOPE_UNIT_SAMPLES 5
+
+/* IMPLEMENT: How a boolean is shown. */
+#define BITOSCOPE_BOOLEAN_ON_OFF 0
+#define BITOSCOPE_BOOLEAN_ENABLE_DISABLE 1
+
+/* IMPLEMENT: One property of a facet: fill in an array of them (each from all zeros) and point your facet's
+ * properties at it. The SDK copies them and every text and array they point to. This struct never grows: the SDK
+ * reads your arrays of it as they are. */
+typedef struct bitoscope_property {
+  const char* id;   /* IMPLEMENT: never shown; unique in the facet: how a value names its property */
+  const char* name; /* IMPLEMENT: shown to the user */
+  int type;         /* IMPLEMENT: BITOSCOPE_PROPERTY_... */
+  /* IMPLEMENT: Optional from here on: leave them 0. */
+  const char* help;  /* IMPLEMENT: a tooltip */
+  const char* group; // IMPLEMENT: the named group it sits in, e.g. "Outputs/PWM output 0" (groups nest with '/'); NULL or "": at the top
+  int unit;          /* IMPLEMENT: BITOSCOPE_UNIT_... */
+  int changeable_during_capture; /* IMPLEMENT: 1: the host may set it while the logic analyzer captures */
+  uint32_t digits;   /* IMPLEMENT: a decimal's decimals, or a number enumeration's; at most 18 */
+  /* IMPLEMENT: An integer's or a decimal's limits, inclusive, in its own encoding (fixed point for a decimal). */
+  int has_minimum;
+  int64_t minimum;
+  int has_maximum;
+  int64_t maximum;
+  int64_t default_value; // IMPLEMENT: an integer's, decimal's (fixed point) or boolean's (0 or 1) default; outside the limits: nearest limit
+  int boolean_style;     /* IMPLEMENT: BITOSCOPE_BOOLEAN_ON_OFF or BITOSCOPE_BOOLEAN_ENABLE_DISABLE */
+  /* IMPLEMENT: An enumeration's items: names, OR numbers in the unit with `digits` (500 MHz in hertz with 0
+   * digits: 500000000). Set one of the two arrays. */
+  const char* const* item_names;
+  const int64_t* item_numbers;
+  size_t num_items;
+  uint32_t default_index; /* IMPLEMENT: an enumeration's default item; past the end: the first */
+} bitoscope_property;
+
+/* IMPLEMENT: One property's value: what a capture and an apply function receive. Which of
  * the three value fields counts is the property's type; the other two are 0. This struct never grows:
  * the SDK hands out arrays of it. */
 typedef struct bitoscope_property_value {
@@ -224,13 +272,18 @@ typedef struct bitoscope_capture {
   uint32_t num_captured_channels; /* IMPLEMENT: how many bits channel_mask has set: the channels in a sample */
   uint64_t sample_limit;         /* IMPLEMENT: how many samples to capture; 0: until the host says STOP */
   int buffered;                  // IMPLEMENT: 0: stream samples as they come. 1: device captures into its own memory; write it out at STOP or the limit
-  /* IMPLEMENT: The current value of EVERY property of the logic analyzer (bitoscope_add_property()), in the
-   * order the host lists them (depth first through the groups): a property the host never set has
-   * its default. None: NULL and 0. Valid until the capture function returns; read one with
-   * bitoscope_find_property_value(). */
+  /* IMPLEMENT: The current value of EVERY property of the logic analyzer (its properties), in the order the
+   * host lists them (depth first through the groups): a property the host never set has its default. None:
+   * NULL and 0. Valid until the capture function returns; read one by its id with bitoscope_property_integer(),
+   * bitoscope_property_boolean() or bitoscope_property_enum_index(). An id your analyzer does not have reads
+   * as 0, and the SDK logs an error naming it. */
   const bitoscope_property_value* properties;
   size_t num_properties;
 } bitoscope_capture;
+
+int64_t bitoscope_property_integer(const bitoscope_capture* capture, const char* id);
+int bitoscope_property_boolean(const bitoscope_capture* capture, const char* id);
+uint32_t bitoscope_property_enum_index(const bitoscope_capture* capture, const char* id);
 
 /* IMPLEMENT: Captures: writes samples until a write answers BITOSCOPE_CAPTURE_OVER, then returns. When the device
  * fails, it says why with bitoscope_fail_capture() (or bitoscope_device_gone() when it is unplugged) and returns:
@@ -251,19 +304,23 @@ typedef void (*bitoscope_capture_fn)(void* session, const bitoscope_capture* cap
 typedef int (*bitoscope_prepare_fn)(void* session, const bitoscope_capture* capture, bitoscope_sink* sink,
                                     bitoscope_reply* reply);
 
-/* IMPLEMENT: Optional: properties of a facet the host set (setProperties), on the SDK's main thread. The SDK has
- * checked every value against your property list already - its type, its limits, an enumeration's
- * items, and "cannot change during a capture" - and takes a request whole or not at all. `capturing`
- * is 1 while this device's logic analyzer captures (from an accepted START to the STOP after it).
- * BITOSCOPE_OK: the values become current. Anything else refuses the whole request, and the previous
- * values stay; give the reason with bitoscope_reply_message() and the property it is about with
- * bitoscope_reply_refused_property() (without one, the request's first value is named).
- * A LOGIC ANALYZER's apply function is called only WHILE IT CAPTURES, with values that may change
- * during a capture: they take effect at once. Between captures the SDK takes the values itself, and
- * they reach you at the next START, in bitoscope_capture's properties. ANY OTHER facet's apply
- * function is called for every accepted request: its values take effect at once. */
+/* IMPLEMENT: Optional: values the host set (setProperties) for a signal generator's or a custom facet's
+ * properties, on the SDK's main thread, for every request the SDK accepted: they take effect at once. The SDK
+ * has checked every value against the facet's properties already - its type, its limits, an enumeration's
+ * items, and "cannot change during a capture" - and takes a request whole or not at all. `capturing` is 1
+ * while this device's logic analyzer captures (from an accepted START to the STOP after it). BITOSCOPE_OK:
+ * the values become current. Anything else refuses the whole request, and the previous values stay; give
+ * the reason with bitoscope_reply_message() and the property it is about with
+ * bitoscope_reply_refused_property() (without one, the request's first value is named). */
 typedef int (*bitoscope_apply_properties_fn)(void* session, const bitoscope_property_value* values,
                                              size_t num_values, int capturing, bitoscope_reply* reply);
+
+/* IMPLEMENT: Optional: values the host set for a logic analyzer's properties WHILE it captures, on the SDK's main
+ * thread, only for properties that may change during a capture: they take effect at once. Checked and taken
+ * as by an apply function (bitoscope_apply_properties_fn). Between captures the SDK takes the values itself,
+ * and they reach you at the next START, in bitoscope_capture's properties. */
+typedef int (*bitoscope_apply_during_capture_fn)(void* session, const bitoscope_property_value* values,
+                                                 size_t num_values, bitoscope_reply* reply);
 
 // IMPLEMENT: A preset for one channel in the host's waveform view: the name on the lead and its colour. Passed as arrays.
 typedef struct bitoscope_channel_preset {
@@ -291,14 +348,40 @@ typedef struct bitoscope_logic_analyzer {
   uint64_t default_sample_rate_milli_hz; // IMPLEMENT: the rate a user interface starts with; 0, or one you did not list: your first listed rate
   const bitoscope_channel_preset* channel_presets; /* IMPLEMENT: for the host's waveform view; NULL: none */
   size_t num_channel_presets;
-  bitoscope_apply_properties_fn apply_properties; /* IMPLEMENT: NULL: every checked request is taken */
+  bitoscope_apply_during_capture_fn apply_during_capture; /* IMPLEMENT: NULL: every checked request is taken */
   /* IMPLEMENT: Why your device has its rate ceilings, shown after the SDK's refusal of a rate above one ("above
    * 2 Gbit/s it loses samples"). NULL: the refusal names the ceiling only. */
   const char* rate_ceiling_reason;
+  /* IMPLEMENT: The logic analyzer's settings (bitoscope_property), for the host's setProperties and in each
+   * capture's properties. NULL and 0: none. */
+  const bitoscope_property* properties;
+  size_t num_properties;
+  /* IMPLEMENT: No sample written for this long, after the first one, fails a streaming capture as stalled: the SDK
+   * makes bitoscope_stopping() and bitoscope_capture_failed() answer 1, and the capture ends as failed where its
+   * samples end. Not before the first write (the host retries a start that delivers nothing), not while waiting for
+   * room in the ring, not after STOP, never in a buffered capture. While bitoscope_stream_usb() streams it is the limit for no transfer completing,
+   * from the stream's start. 0: none, and while bitoscope_stream_usb() streams 3 transfer periods, at least 1 s;
+   * BITOSCOPE_NO_SILENCE_LIMIT: never. */
+  uint32_t silence_limit_ms;
+  /* IMPLEMENT: 1: the SDK lists "USB transfers" and "USB transfer size (KiB, 0: automatic)" at the end of your logic
+   * analyzer's "Diagnostics" group (ids BITOSCOPE_USB_TRANSFERS_PROPERTY and BITOSCOPE_USB_TRANSFER_KIB_PROPERTY),
+   * and bitoscope_stream_usb() takes transfers and transfer_bytes from them: leave those two 0. A user's size is
+   * taken as it is; 0, the default, is the SDK's own sizing. */
+  int usb_stream_properties;
 } bitoscope_logic_analyzer;
 
-#define bitoscope_add_logic_analyzer(device, analyzer) \
-  bitoscope_add_logic_analyzer_sized((device), (analyzer), sizeof(*(analyzer)))
+/* IMPLEMENT: A silence_limit_ms that is never reached. */
+#define BITOSCOPE_NO_SILENCE_LIMIT 0xFFFFFFFFu
+
+/* IMPLEMENT: Your capture function returns within this many ms of STOP. When it does not, the SDK answers STOP as
+ * failed and refuses every START until it returns. */
+#define BITOSCOPE_STOP_LIMIT_MS 4500
+
+#define BITOSCOPE_USB_TRANSFERS_PROPERTY "usb_transfers"
+#define BITOSCOPE_USB_TRANSFER_KIB_PROPERTY "usb_transfer_kib"
+
+#define bitoscope_add_logic_analyzer(device, analyzer, reply) \
+  bitoscope_add_logic_analyzer_sized((device), (analyzer), sizeof(*(analyzer)), (reply))
 
 #define BITOSCOPE_CAPTURE_OVER (-120)
 
@@ -360,9 +443,6 @@ void* bitoscope_usb_libusb_context(bitoscope_usb_device* usb);
 
 void* bitoscope_usb_libusb_handle(bitoscope_usb_device* usb);
 
-/* IMPLEMENT: A silence_limit_ms of bitoscope_usb_stream that is never reached. */
-#define BITOSCOPE_USB_NO_SILENCE_LIMIT 0xFFFFFFFFu
-
 /* IMPLEMENT: Optional: called once, on the capture thread, when every transfer is in flight: send your device's
  * start command here. BITOSCOPE_OK streams on; anything else fails the capture (say why with
  * bitoscope_fail_capture() first). */
@@ -394,13 +474,10 @@ typedef struct bitoscope_usb_stream {
   /* IMPLEMENT: Samples thrown away at the start of the stream (a settling time, say), rounded up to whole
    * units: unit_samples with convert, else 8 samples in BITOSCOPE_CHANNEL_MAJOR and 1 in BITOSCOPE_SAMPLE_MAJOR. */
   uint64_t preroll_samples;
-  /* IMPLEMENT: Bytes of each transfer, a multiple of 1024 up to 16 MiB. 0: about 2 s of your device's data,
-   * 16 KiB to 1 MiB. */
+  /* IMPLEMENT: Bytes of each transfer, a multiple of 1024 up to 16 MiB. 0: about 0.1 s of your device's data,
+   * rounded up to whole KiB, at most 1 MiB, so the first data arrives within about 0.2 s at any rate. */
   uint32_t transfer_bytes;
   uint32_t transfers; /* IMPLEMENT: transfers kept in flight, 2 to 64; 0: 8 */
-  /* IMPLEMENT: No transfer completing for this long fails the capture as stalled. 0: 3 transfer periods, at
-   * least 1 s, and none in a buffered capture; BITOSCOPE_USB_NO_SILENCE_LIMIT: never. */
-  uint32_t silence_limit_ms;
   /* IMPLEMENT: Delivery that falls this many of your device's bytes behind its sample clock fails the capture:
    * about what your device can hold before it drops data. 0: not checked; never in a buffered capture. */
   uint64_t lag_limit_bytes;
@@ -417,10 +494,6 @@ typedef struct bitoscope_usb_stream {
 #define bitoscope_stream_usb(sink, stream) bitoscope_stream_usb_sized((sink), (stream), sizeof(*(stream)))
 
 void bitoscope_stream_usb_sized(bitoscope_sink* sink, const bitoscope_usb_stream* stream, size_t stream_size);
-
-/* IMPLEMENT: The facet a signal generator is listed as: the facet name bitoscope_add_property() takes for its
- * properties. */
-#define BITOSCOPE_SIGNAL_GENERATOR_FACET "siggen"
 
 /* IMPLEMENT: A waveform in a command: its name and its parameters exactly as the host sent them. Valid during
  * the call it is passed to. */
@@ -461,10 +534,12 @@ typedef struct bitoscope_signal_generator {
   uint64_t max_frequency_milli_hz;
   int supports_synchronized_start; /* IMPLEMENT: 1: several outputs in one start begin as one atomic operation */
   bitoscope_apply_properties_fn apply_properties; /* IMPLEMENT: NULL: every checked request is taken */
+  const bitoscope_property* properties; /* IMPLEMENT: the outputs' settings (frequency, on or off); NULL and 0: none */
+  size_t num_properties;
 } bitoscope_signal_generator;
 
-#define bitoscope_add_signal_generator(device, generator) \
-  bitoscope_add_signal_generator_sized((device), (generator), sizeof(*(generator)))
+#define bitoscope_add_signal_generator(device, generator, reply) \
+  bitoscope_add_signal_generator_sized((device), (generator), sizeof(*(generator)), (reply))
 
 /* IMPLEMENT: Handles one command to your facet: `payload` is the command as the host sent it (your facet's own
  * format). Return BITOSCOPE_OK (done), BITOSCOPE_UNKNOWN_COMMAND (the host gets a refusal), or
@@ -488,9 +563,11 @@ typedef struct bitoscope_facet {
    * version N. Leave it 0 unless a new protocol version changed this facet. */
   uint32_t protocol_major;
   bitoscope_apply_properties_fn apply_properties; /* IMPLEMENT: NULL: every checked request is taken */
+  const bitoscope_property* properties; /* IMPLEMENT: the facet's settings; NULL and 0: none */
+  size_t num_properties;
 } bitoscope_facet;
 
-#define bitoscope_add_facet(device, facet) bitoscope_add_facet_sized((device), (facet), sizeof(*(facet)))
+#define bitoscope_add_facet(device, facet, reply) bitoscope_add_facet_sized((device), (facet), sizeof(*(facet)), (reply))
 
 int bitoscope_reply_payload(bitoscope_reply* reply, const void* payload, size_t payload_size);
 
@@ -498,64 +575,13 @@ int bitoscope_reply_refused_property(bitoscope_reply* reply, const char* id);
 
 int bitoscope_send_event(const char* facet, const void* payload, size_t payload_size);
 
-/* IMPLEMENT: A property's type. */
-#define BITOSCOPE_PROPERTY_INTEGER 0     /* IMPLEMENT: an int64 */
-#define BITOSCOPE_PROPERTY_DECIMAL 1     /* IMPLEMENT: fixed point: an int64 with `digits` decimals (1.60 V is 160) */
-#define BITOSCOPE_PROPERTY_BOOLEAN 2     /* IMPLEMENT: on or off */
-#define BITOSCOPE_PROPERTY_ENUMERATION 3 /* IMPLEMENT: one of a list of items: names, or numbers in the unit */
-
-/* IMPLEMENT: What a value measures: only the quantity, never milli or mega - the host chooses the prefix. */
-#define BITOSCOPE_UNIT_NONE 0
-#define BITOSCOPE_UNIT_VOLT 1
-#define BITOSCOPE_UNIT_SECOND 2 /* IMPLEMENT: a time or a period */
-#define BITOSCOPE_UNIT_HERTZ 3
-#define BITOSCOPE_UNIT_PERCENT 4
-#define BITOSCOPE_UNIT_SAMPLES 5
-
-/* IMPLEMENT: How a boolean is shown. */
-#define BITOSCOPE_BOOLEAN_ON_OFF 0
-#define BITOSCOPE_BOOLEAN_ENABLE_DISABLE 1
-
-/* IMPLEMENT: One property. Fill it in (start from all zeros) and pass it to bitoscope_add_property(); the SDK
- * copies it and every text and array it points to. */
-typedef struct bitoscope_property {
-  const char* id;   /* IMPLEMENT: never shown; unique in the facet: how a value names its property */
-  const char* name; /* IMPLEMENT: shown to the user */
-  int type;         /* IMPLEMENT: BITOSCOPE_PROPERTY_... */
-  /* IMPLEMENT: Optional from here on: leave them 0. */
-  const char* help;  /* IMPLEMENT: a tooltip */
-  const char* group; // IMPLEMENT: the named group it sits in, e.g. "Outputs/PWM output 0" (groups nest with '/'); NULL or "": at the top
-  int unit;          /* IMPLEMENT: BITOSCOPE_UNIT_... */
-  int changeable_during_capture; /* IMPLEMENT: 1: the host may set it while the logic analyzer captures */
-  uint32_t digits;   /* IMPLEMENT: a decimal's decimals, or a number enumeration's; at most 18 */
-  /* IMPLEMENT: An integer's or a decimal's limits, inclusive, in its own encoding (fixed point for a decimal). */
-  int has_minimum;
-  int64_t minimum;
-  int has_maximum;
-  int64_t maximum;
-  int64_t default_value; // IMPLEMENT: an integer's, decimal's (fixed point) or boolean's (0 or 1) default; outside the limits: nearest limit
-  int boolean_style;     /* IMPLEMENT: BITOSCOPE_BOOLEAN_ON_OFF or BITOSCOPE_BOOLEAN_ENABLE_DISABLE */
-  /* IMPLEMENT: An enumeration's items: names, OR numbers in the unit with `digits` (500 MHz in hertz with 0
-   * digits: 500000000). Set one of the two arrays. */
-  const char* const* item_names;
-  const int64_t* item_numbers;
-  size_t num_items;
-  uint32_t default_index; /* IMPLEMENT: an enumeration's default item; past the end: the first */
-} bitoscope_property;
-
-#define bitoscope_add_property(device, facet_name, property) \
-  bitoscope_add_property_sized((device), (facet_name), (property), sizeof(*(property)))
-
-const bitoscope_property_value* bitoscope_find_property_value(const bitoscope_property_value* values,
-                                                              size_t num_values, const char* id);
 
 int bitoscope_add_logic_analyzer_sized(bitoscope_device* device, const bitoscope_logic_analyzer* analyzer,
-                                       size_t analyzer_size);
+                                       size_t analyzer_size, bitoscope_reply* reply);
 int bitoscope_add_signal_generator_sized(bitoscope_device* device, const bitoscope_signal_generator* generator,
-                                         size_t generator_size);
-int bitoscope_add_facet_sized(bitoscope_device* device, const bitoscope_facet* facet, size_t facet_size);
-int bitoscope_add_property_sized(bitoscope_device* device, const char* facet_name,
-                                 const bitoscope_property* property, size_t property_size);
+                                         size_t generator_size, bitoscope_reply* reply);
+int bitoscope_add_facet_sized(bitoscope_device* device, const bitoscope_facet* facet, size_t facet_size,
+                              bitoscope_reply* reply);
 
 #ifdef __cplusplus
 }

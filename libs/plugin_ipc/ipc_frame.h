@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -35,6 +36,19 @@ struct FrameError {
 
 std::array<uint8_t, kFrameHeaderBytes> frameHeader(uint32_t bodyBytes);
 
+class Frame {
+ public:
+  explicit Frame(std::size_t bodyBytes);
+
+  std::span<uint8_t> body() { return {storage_.get() + kFrameHeaderBytes, bodyBytes_}; }
+  std::span<const uint8_t> body() const { return {storage_.get() + kFrameHeaderBytes, bodyBytes_}; }
+  std::span<const uint8_t> bytes() const { return {storage_.get(), kFrameHeaderBytes + bodyBytes_}; }
+
+ private:
+  std::unique_ptr<uint8_t[]> storage_;
+  std::size_t bodyBytes_;
+};
+
 class FrameReader {
  public:
   explicit FrameReader(ByteSource& source, uint32_t maxFrameBytes = kDefaultMaxFrameBytes);
@@ -57,8 +71,11 @@ class FrameWriter {
   explicit FrameWriter(ByteSink& sink, uint32_t maxFrameBytes = kDefaultMaxFrameBytes);
 
   std::expected<void, FrameError> write(std::span<const uint8_t> message);
+  std::expected<void, FrameError> write(const Frame& frame);
 
  private:
+  std::expected<void, FrameError> checkSize(std::size_t messageBytes) const;
+
   ByteSink& sink_;
   uint32_t maxFrameBytes_;
 };

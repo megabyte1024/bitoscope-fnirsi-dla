@@ -13,6 +13,7 @@
 
 #include "bitoscope_driver.h"
 #include "device_bytes.h"
+#include "device_location.h"
 #include "driver_calls.h"
 #include "driver_description.h"
 #include "driver_model.h"
@@ -25,6 +26,7 @@
 #include "plugin_model.h"
 #include "private_stdio.h"
 #include "signal_generator_facet.h"
+#include "usb_stream_properties.h"
 
 namespace sdk = bitoscope::plugin_c_sdk;
 namespace ipc = bitoscope::ipc;
@@ -35,9 +37,24 @@ constexpr uint32_t kChannelMaskBits = 32;
 constexpr int kHostChannelColorCount = 32;
 constexpr const char* kFacetsAreIdentifys = "facets and their properties are added in identify only";
 
-int refused(const std::string& message) {
+int refused(bitoscope_reply* reply, const std::string& message) {
   sdk::logLine(ipc::LogLevel::error, message);
+  if (reply != nullptr) reply->message = message;
   return BITOSCOPE_ERROR;
+}
+
+void keepTree(bitoscope_device& device, std::string facet, std::vector<ipc::props::PropertyNode> tree) {
+  if (!tree.empty()) device.properties.push_back(sdk::FacetPropertyTree{std::move(facet), std::move(tree)});
+}
+
+const bitoscope_property_value* valueNamed(const bitoscope_capture* capture, const char* id) {
+  if (capture == nullptr || id == nullptr) return nullptr;
+  for (size_t i = 0; capture->properties != nullptr && i < capture->num_properties; ++i) {
+    const bitoscope_property_value& value = capture->properties[i];
+    if (value.id != nullptr && std::strcmp(value.id, id) == 0) return &value;
+  }
+  sdk::logMissingProperty(id);
+  return nullptr;
 }
 
 bool empty(const char* text) { return text == nullptr || text[0] == '\0'; }
@@ -56,9 +73,13 @@ std::expected<void, std::string> addFound(bitoscope_found_devices& found, const 
   if (std::any_of(found.devices.begin(), found.devices.end(), [&](const sdk::SourceDevice& d) { return d.id == id; })) {
     return std::unexpected("id \"" + id + "\" is found already");
   }
-  auto located = sdk::sourceDeviceOf(device);
-  if (!located) return std::unexpected(std::move(located.error()));
-  found.devices.push_back(std::move(*located));
+  auto location = sdk::locationOf(device);
+  if (!location) return std::unexpected(std::move(location.error()));
+  sdk::SourceDevice located;
+  located.id = id;
+  if (device.appearance_key != nullptr) located.appearanceKey = device.appearance_key;
+  located.location = std::move(*location);
+  found.devices.push_back(std::move(located));
   return {};
 }
 
@@ -155,7 +176,7 @@ int bitoscope_add_found_device(bitoscope_found_devices* found, const char* id) {
     bitoscope_found_device device{};
     device.id = id;
     auto added = addFound(*found, device);
-    if (!added) return refused("bitoscope_add_found_device: " + added.error());
+    if (!added) return refused(nullptr, "bitoscope_add_found_device: " + added.error());
     return BITOSCOPE_OK;
   } catch (...) {
     return BITOSCOPE_ERROR;
@@ -167,7 +188,7 @@ int bitoscope_add_located_device_sized(bitoscope_found_devices* found, const bit
   try {
     if (found == nullptr || device == nullptr) return BITOSCOPE_ERROR;
     auto added = addFound(*found, copiedFromPossiblyShorterStruct(device, device_size));
-    if (!added) return refused("bitoscope_add_located_device: " + added.error());
+    if (!added) return refused(nullptr, "bitoscope_add_located_device: " + added.error());
     return BITOSCOPE_OK;
   } catch (...) {
     return BITOSCOPE_ERROR;
@@ -178,7 +199,7 @@ int bitoscope_report_progress(bitoscope_progress* progress, int code, const char
   try {
     if (progress == nullptr) return BITOSCOPE_ERROR;
     auto reported = sdk::reportProgress(*progress, code, detail != nullptr ? detail : "");
-    if (!reported) return refused("bitoscope_report_progress: " + reported.error());
+    if (!reported) return refused(nullptr, "bitoscope_report_progress: " + reported.error());
     return BITOSCOPE_OK;
   } catch (...) {
     return BITOSCOPE_ERROR;
@@ -206,22 +227,22 @@ int bitoscope_set_serial_number(bitoscope_device* device, const char* serial_num
 }
 
 int bitoscope_add_logic_analyzer_sized(bitoscope_device* device, const bitoscope_logic_analyzer* analyzer,
-                                       size_t analyzer_size) {
+                                       size_t analyzer_size, bitoscope_reply* reply) {
   try {
     if (device == nullptr || analyzer == nullptr) return BITOSCOPE_ERROR;
     const bitoscope_logic_analyzer la = copiedFromPossiblyShorterStruct(analyzer, analyzer_size);
     const std::string where = "bitoscope_add_logic_analyzer (device \"" + device->id + "\"): ";
-    if (device->facetsFixed) return refused(where + kFacetsAreIdentifys);
-    if (la.capture == nullptr) return refused(where + "no capture function");
+    if (device->facetsFixed) return refused(reply, where + kFacetsAreIdentifys);
+    if (la.capture == nullptr) return refused(reply, where + "no capture function");
     if (la.num_channels == 0 || la.num_channels > kChannelMaskBits) {
-      return refused(where + std::to_string(la.num_channels) + " channels; logic analyzer has 1 to 32");
+      return refused(reply, where + std::to_string(la.num_channels) + " channels; logic analyzer has 1 to 32");
     }
-    if (la.num_sample_rates == 0 || la.sample_rates_milli_hz == nullptr) return refused(where + "no sample rate");
+    if (la.num_sample_rates == 0 || la.sample_rates_milli_hz == nullptr) return refused(reply, where + "no sample rate");
     if (auto checked = sdk::checkDeviceBytes(la.device_bytes, la.num_channels); !checked) {
-      return refused(where + checked.error());
+      return refused(reply, where + checked.error());
     }
     if (hasFacet(*device, sdk::kLaFacetName, sdk::kLaFacetMajor, 0)) {
-      return refused(where + "device has logic analyzer already");
+      return refused(reply, where + "device has logic analyzer already");
     }
     sdk::LogicAnalyzerRegistration registration;
     registration.numChannels = la.num_channels;
@@ -230,12 +251,19 @@ int bitoscope_add_logic_analyzer_sized(bitoscope_device* device, const bitoscope
     registration.deviceBytes = la.device_bytes;
     registration.prepare = la.prepare;
     if (la.rate_ceiling_reason != nullptr) registration.rateCeilingReason = la.rate_ceiling_reason;
-    registration.applyProperties = la.apply_properties;
+    registration.applyDuringCapture = la.apply_during_capture;
+    registration.silenceLimitMs = la.silence_limit_ms;
+    registration.usbStreamProperties = la.usb_stream_properties != 0;
     auto ceilings = rateCeilings(la, registration.sampleRatesMilliHz);
-    if (!ceilings) return refused(where + ceilings.error());
+    if (!ceilings) return refused(reply, where + ceilings.error());
     registration.rateCeilingsMilliHz = std::move(*ceilings);
     auto presets = channelPresets(la);
-    if (!presets) return refused(where + presets.error());
+    if (!presets) return refused(reply, where + presets.error());
+    auto tree = sdk::propertyTreeOf(la.properties, la.num_properties);
+    if (!tree) return refused(reply, where + tree.error());
+    if (registration.usbStreamProperties) {
+      if (auto added = sdk::addUsbStreamProperties(*tree); !added) return refused(reply, where + added.error());
+    }
     ipc::la::LaAcquisitionInfo described;
     described.numChannels = la.num_channels;
     described.supportedSampleRatesMilliHz = registration.sampleRatesMilliHz;
@@ -248,7 +276,7 @@ int bitoscope_add_logic_analyzer_sized(bitoscope_device* device, const bitoscope
             : rates.front();
     described.channelPresets = std::move(*presets);
     auto info = ipc::la::encodeInfo(described);
-    if (!info) return refused(where + "its description could not be encoded: " + info.error());
+    if (!info) return refused(reply, where + "its description could not be encoded: " + info.error());
     device->facets.push_back(sdk::FacetRegistration{
         sdk::kLaFacetName, sdk::kLaFacetMajor, sdk::kLaFacetMinor, 0, {}, std::move(*info),
         [registration = std::move(registration), device](const std::vector<ipc::props::PropertyValue>& values) {
@@ -256,6 +284,7 @@ int bitoscope_add_logic_analyzer_sized(bitoscope_device* device, const bitoscope
           session.session = device->session;
           return std::unique_ptr<sdk::FacetHandler>(std::make_unique<sdk::LaRuntime>(session, values));
         }});
+    keepTree(*device, sdk::kLaFacetName, std::move(*tree));
     return BITOSCOPE_OK;
   } catch (...) {
     return BITOSCOPE_ERROR;
@@ -263,29 +292,31 @@ int bitoscope_add_logic_analyzer_sized(bitoscope_device* device, const bitoscope
 }
 
 int bitoscope_add_signal_generator_sized(bitoscope_device* device, const bitoscope_signal_generator* generator,
-                                         size_t generator_size) {
+                                         size_t generator_size, bitoscope_reply* reply) {
   try {
     if (device == nullptr || generator == nullptr) return BITOSCOPE_ERROR;
     const bitoscope_signal_generator g = copiedFromPossiblyShorterStruct(generator, generator_size);
     const std::string where = "bitoscope_add_signal_generator (device \"" + device->id + "\"): ";
-    if (device->facetsFixed) return refused(where + kFacetsAreIdentifys);
-    if (g.start == nullptr) return refused(where + "no start function");
-    if (g.stop == nullptr) return refused(where + "no stop function");
-    if (g.configure == nullptr) return refused(where + "no configure function");
+    if (device->facetsFixed) return refused(reply, where + kFacetsAreIdentifys);
+    if (g.start == nullptr) return refused(reply, where + "no start function");
+    if (g.stop == nullptr) return refused(reply, where + "no stop function");
+    if (g.configure == nullptr) return refused(reply, where + "no configure function");
     if (g.num_channels == 0 || g.num_channels > kChannelMaskBits) {
-      return refused(where + std::to_string(g.num_channels) + " outputs; signal generator has 1 to 32");
+      return refused(reply, where + std::to_string(g.num_channels) + " outputs; signal generator has 1 to 32");
     }
-    if (g.num_waveforms > 0 && g.waveforms == nullptr) return refused(where + "waveform names missing");
+    if (g.num_waveforms > 0 && g.waveforms == nullptr) return refused(reply, where + "waveform names missing");
     ipc::siggen::SignalGeneratorInfo described{g.num_channels, {}, g.min_frequency_milli_hz, g.max_frequency_milli_hz,
                                                g.supports_synchronized_start != 0};
     for (size_t i = 0; i < g.num_waveforms; ++i) {
-      if (empty(g.waveforms[i])) return refused(where + "waveform needs name");
+      if (empty(g.waveforms[i])) return refused(reply, where + "waveform needs name");
       described.supportedWaveforms.emplace_back(g.waveforms[i]);
     }
     const std::string name(ipc::siggen::kFacetName);
-    if (hasFacet(*device, name, 1, 0)) return refused(where + "device has signal generator already");
+    if (hasFacet(*device, name, 1, 0)) return refused(reply, where + "device has signal generator already");
+    auto tree = sdk::propertyTreeOf(g.properties, g.num_properties);
+    if (!tree) return refused(reply, where + tree.error());
     auto info = ipc::siggen::encodeInfo(described);
-    if (!info) return refused(where + "its description could not be encoded: " + info.error());
+    if (!info) return refused(reply, where + "its description could not be encoded: " + info.error());
     const sdk::SignalGeneratorRegistration registration{g.start, g.stop, g.configure, nullptr, g.apply_properties};
     device->facets.push_back(sdk::FacetRegistration{
         name, 1, 0, 0, {}, std::move(*info), [registration, device](const std::vector<ipc::props::PropertyValue>&) {
@@ -293,6 +324,7 @@ int bitoscope_add_signal_generator_sized(bitoscope_device* device, const bitosco
           session.session = device->session;
           return sdk::makeSignalGeneratorFacet(session);
         }});
+    keepTree(*device, name, std::move(*tree));
     return BITOSCOPE_OK;
   } catch (...) {
     return BITOSCOPE_ERROR;
@@ -317,31 +349,34 @@ int bitoscope_read_square_wave(const bitoscope_waveform* waveform, bitoscope_squ
   }
 }
 
-int bitoscope_add_facet_sized(bitoscope_device* device, const bitoscope_facet* facet, size_t facet_size) {
+int bitoscope_add_facet_sized(bitoscope_device* device, const bitoscope_facet* facet, size_t facet_size,
+                              bitoscope_reply* reply) {
   try {
     if (device == nullptr || facet == nullptr) return BITOSCOPE_ERROR;
     const bitoscope_facet f = copiedFromPossiblyShorterStruct(facet, facet_size);
     const std::string where = "bitoscope_add_facet (device \"" + device->id + "\"): ";
-    if (device->facetsFixed) return refused(where + kFacetsAreIdentifys);
-    if (empty(f.name)) return refused(where + "facet needs name");
-    if (f.command == nullptr) return refused(where + "facet \"" + f.name + "\" has no command function");
+    if (device->facetsFixed) return refused(reply, where + kFacetsAreIdentifys);
+    if (empty(f.name)) return refused(reply, where + "facet needs name");
+    if (f.command == nullptr) return refused(reply, where + "facet \"" + f.name + "\" has no command function");
     const uint32_t major = f.version_major == 0 ? 1 : f.version_major;
     if (hasFacet(*device, f.name, major, f.protocol_major)) {
-      return refused(where + "facet \"" + f.name + "\" major " + std::to_string(major) +
+      return refused(reply, where + "facet \"" + f.name + "\" major " + std::to_string(major) +
                      (f.protocol_major != 0 ? " for protocol major " + std::to_string(f.protocol_major) : std::string()) +
                      " is registered already");
     }
-    if (f.num_capabilities > 0 && f.capabilities == nullptr) return refused(where + "capabilities missing");
-    if (f.info_size > 0 && f.info == nullptr) return refused(where + "info missing");
+    if (f.num_capabilities > 0 && f.capabilities == nullptr) return refused(reply, where + "capabilities missing");
+    if (f.info_size > 0 && f.info == nullptr) return refused(reply, where + "info missing");
     sdk::FacetRegistration registration;
     registration.name = f.name;
     registration.major = major;
     registration.minor = f.version_minor;
     registration.protocolMajor = f.protocol_major;
     for (size_t i = 0; i < f.num_capabilities; ++i) {
-      if (empty(f.capabilities[i])) return refused(where + "capability needs name");
+      if (empty(f.capabilities[i])) return refused(reply, where + "capability needs name");
       registration.capabilities.emplace_back(f.capabilities[i]);
     }
+    auto tree = sdk::propertyTreeOf(f.properties, f.num_properties);
+    if (!tree) return refused(reply, where + tree.error());
     const auto* info = static_cast<const uint8_t*>(f.info);
     registration.info.assign(info, info + f.info_size);
     registration.makeHandler = [name = registration.name,
@@ -351,6 +386,7 @@ int bitoscope_add_facet_sized(bitoscope_device* device, const bitoscope_facet* f
       session.session = device->session;
       return sdk::makeGenericFacet(name, session);
     };
+    keepTree(*device, registration.name, std::move(*tree));
     device->facets.push_back(std::move(registration));
     return BITOSCOPE_OK;
   } catch (...) {
@@ -379,44 +415,31 @@ int bitoscope_reply_refused_property(bitoscope_reply* reply, const char* id) {
   }
 }
 
-int bitoscope_add_property_sized(bitoscope_device* device, const char* facet_name, const bitoscope_property* property,
-                                 size_t property_size) {
+int64_t bitoscope_property_integer(const bitoscope_capture* capture, const char* id) {
   try {
-    if (device == nullptr || property == nullptr) return BITOSCOPE_ERROR;
-    const bitoscope_property p = copiedFromPossiblyShorterStruct(property, property_size);
-    const std::string facet = facet_name != nullptr ? facet_name : "";
-    const std::string where = "bitoscope_add_property (device \"" + device->id + "\", facet \"" + facet +
-                              "\", property \"" + (p.id != nullptr ? p.id : "") + "\"): ";
-    if (facet.empty()) return refused(where + "no facet name");
-    if (device->facetsFixed) return refused(where + kFacetsAreIdentifys);
-    const bool added = std::any_of(device->facets.begin(), device->facets.end(),
-                                   [&](const sdk::FacetRegistration& r) { return r.name == facet; });
-    if (!added) return refused(where + "device has no facet \"" + facet + "\"; add facet first");
-    auto placed = sdk::propertyFrom(p);
-    if (!placed) return refused(where + placed.error());
-    auto tree = std::find_if(device->properties.begin(), device->properties.end(),
-                             [&](const sdk::FacetPropertyTree& t) { return t.facet == facet; });
-    std::vector<ipc::props::PropertyNode> nodes = tree != device->properties.end() ? tree->tree
-                                                                                    : std::vector<ipc::props::PropertyNode>{};
-    if (auto ok = sdk::addProperty(nodes, std::move(*placed)); !ok) return refused(where + ok.error());
-    if (tree != device->properties.end()) {
-      tree->tree = std::move(nodes);
-    } else {
-      device->properties.push_back(sdk::FacetPropertyTree{facet, std::move(nodes)});
-    }
-    return BITOSCOPE_OK;
+    const bitoscope_property_value* value = valueNamed(capture, id);
+    return value != nullptr ? value->integer : 0;
   } catch (...) {
-    return BITOSCOPE_ERROR;
+    return 0;
   }
 }
 
-const bitoscope_property_value* bitoscope_find_property_value(const bitoscope_property_value* values, size_t num_values,
-                                                              const char* id) {
-  if (values == nullptr || id == nullptr) return nullptr;
-  for (size_t i = 0; i < num_values; ++i) {
-    if (values[i].id != nullptr && std::strcmp(values[i].id, id) == 0) return &values[i];
+int bitoscope_property_boolean(const bitoscope_capture* capture, const char* id) {
+  try {
+    const bitoscope_property_value* value = valueNamed(capture, id);
+    return value != nullptr ? value->boolean : 0;
+  } catch (...) {
+    return 0;
   }
-  return nullptr;
+}
+
+uint32_t bitoscope_property_enum_index(const bitoscope_capture* capture, const char* id) {
+  try {
+    const bitoscope_property_value* value = valueNamed(capture, id);
+    return value != nullptr ? value->enum_index : 0;
+  } catch (...) {
+    return 0;
+  }
 }
 
 void bitoscope_device_gone(bitoscope_sink* sink, const char* reason) {
@@ -436,7 +459,7 @@ int bitoscope_send_event(const char* facet, const void* payload, size_t payload_
     if (empty(facet) || (payload == nullptr && payload_size > 0)) return BITOSCOPE_ERROR;
     const auto* bytes = static_cast<const uint8_t*>(payload);
     auto sent = sdk::sendFacetEvent(facet, ipc::Bytes(bytes, bytes + payload_size));
-    if (!sent) return refused(std::string("bitoscope_send_event (") + facet + "): " + sent.error());
+    if (!sent) return refused(nullptr, std::string("bitoscope_send_event (") + facet + "): " + sent.error());
     return BITOSCOPE_OK;
   } catch (...) {
     return BITOSCOPE_ERROR;

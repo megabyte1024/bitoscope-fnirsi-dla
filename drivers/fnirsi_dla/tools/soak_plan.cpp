@@ -12,7 +12,6 @@
 
 #include "display_text.h"
 #include "fnirsi_protocol.h"
-#include "usb_transfer_config.h"
 
 namespace fnirsi::tools {
 
@@ -230,7 +229,7 @@ std::expected<SoakOptions, std::string> parseSoakArgs(std::span<const std::strin
       if (!s) return std::unexpected(s.error());
       o.seconds = *s;
     } else if (arg == "--usb-transfer-kib") {
-      auto kib = numberIn(arg, value, kMinUsbTransferKib, kMaxUsbTransferKib);
+      auto kib = numberIn(arg, value, 1, UINT32_MAX);
       if (!kib) return std::unexpected(kib.error());
       o.usb_transfer_kib = static_cast<uint32_t>(*kib);
     } else if (arg == "--ring-mib") {
@@ -332,7 +331,7 @@ std::string soakUsage() {
          "                        least one of D0-D3); stream holds them in input order\n"
          "  --seconds N           how long to stream (default 60)\n"
          "  --usb-transfer-kib N  driver's USB transfer size, set as its usb_transfer_kib property\n"
-         "                        (default: driver's own, 8, each about 0.1 s of data, 16 KiB to 1 MiB)\n"
+         "                        (default: automatic, 8, each about 0.1 s of data, at most 1 MiB)\n"
          "  --ring-mib N          bulk ring, whole 4 MiB slots (default 256)\n"
          "  --pwm-hz F0,F1,F2,F3  PWM on P0-P3, whole Hz (default 1300,2100,3700,5300)\n"
          "  --duty D0,D1,D2,D3    their duty, percent (default 25,50,75,40: acceptance runs' set)\n"

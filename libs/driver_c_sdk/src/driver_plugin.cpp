@@ -55,14 +55,15 @@ std::unique_ptr<FacetHandler> makeGenericFacet(std::string name, GenericRegistra
   return std::make_unique<GenericFacet>(std::move(name), registration);
 }
 
-std::expected<void, ApplyRefusal> applyThrough(bitoscope_apply_properties_fn apply, void* user,
-                                               std::span<const ipc::props::PropertyValue> values, bool capturing) {
-  if (apply == nullptr) return {};
+namespace {
+
+template <typename Apply>
+std::expected<void, ApplyRefusal> appliedOrRefused(std::span<const ipc::props::PropertyValue> values, Apply&& apply) {
   const std::vector<bitoscope_property_value> given = cValues(values);
   bitoscope_reply reply;
   int status = BITOSCOPE_ERROR;
   try {
-    status = apply(user, given.data(), given.size(), capturing ? 1 : 0, &reply);
+    status = apply(given, reply);
   } catch (const std::exception& e) {
     reply.message = std::string("apply function threw: ") + e.what();
   } catch (...) {
@@ -70,6 +71,24 @@ std::expected<void, ApplyRefusal> applyThrough(bitoscope_apply_properties_fn app
   }
   if (status == BITOSCOPE_OK) return {};
   return std::unexpected(ApplyRefusal{std::move(reply.message), std::move(reply.refusedProperty)});
+}
+
+}
+
+std::expected<void, ApplyRefusal> applyThrough(bitoscope_apply_properties_fn apply, void* user,
+                                               std::span<const ipc::props::PropertyValue> values, bool capturing) {
+  if (apply == nullptr) return {};
+  return appliedOrRefused(values, [&](const std::vector<bitoscope_property_value>& given, bitoscope_reply& reply) {
+    return apply(user, given.data(), given.size(), capturing ? 1 : 0, &reply);
+  });
+}
+
+std::expected<void, ApplyRefusal> applyThrough(bitoscope_apply_during_capture_fn apply, void* user,
+                                               std::span<const ipc::props::PropertyValue> values) {
+  if (apply == nullptr) return {};
+  return appliedOrRefused(values, [&](const std::vector<bitoscope_property_value>& given, bitoscope_reply& reply) {
+    return apply(user, given.data(), given.size(), &reply);
+  });
 }
 
 }

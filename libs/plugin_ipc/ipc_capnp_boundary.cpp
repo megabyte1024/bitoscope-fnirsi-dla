@@ -4,6 +4,7 @@
 
 #include "ipc_capnp_boundary.h"
 
+#include <array>
 #include <cstring>
 #include <exception>
 #include <new>
@@ -64,7 +65,65 @@ struct ReusedSegment {
   bool busy = false;
 };
 
-thread_local ReusedSegment tReused;
+thread_local std::array<ReusedSegment, 2> tReused;
+
+class PooledBuilder {
+ public:
+  PooledBuilder() {
+    for (ReusedSegment& segment : tReused) {
+      if (!segment.busy) {
+        held_ = &segment;
+        break;
+      }
+    }
+    if (held_ == nullptr) {
+      message_.emplace();
+      return;
+    }
+    if (held_->words == nullptr) {
+      held_->words = kj::heapArray<capnp::word>(kReusedSegmentWords);
+      std::memset(held_->words.begin(), 0, held_->words.size() * sizeof(capnp::word));
+    }
+    message_.emplace(held_->words.asPtr());
+    held_->busy = true;
+  }
+  ~PooledBuilder() {
+    // WHY: The builder is destroyed before release: it zeroes the segment,
+    // which must be zero before another builder takes it.
+    message_.reset();
+    if (held_ != nullptr) held_->busy = false;
+  }
+  PooledBuilder(const PooledBuilder&) = delete;
+  PooledBuilder& operator=(const PooledBuilder&) = delete;
+
+  capnp::MessageBuilder& get() { return *message_; }
+
+ private:
+  ReusedSegment* held_ = nullptr;
+  std::optional<capnp::MallocMessageBuilder> message_;
+};
+
+Frame framed(capnp::MessageBuilder& message) {
+  Frame frame(serializedBytes(message));
+  serializeInto(message, frame.body());
+  return frame;
+}
+
+template <class Build>
+auto guarded(const Build& build) -> std::expected<decltype(build()), std::string> {
+  NoStackTraceCallback noStackTraces;
+  try {
+    return build();
+  } catch (const kj::Exception& e) {
+    return std::unexpected(std::string("message could not be built: ") + e.getDescription().cStr());
+  } catch (const std::bad_alloc&) {
+    return std::unexpected(std::string("out of memory while building message"));
+  } catch (const std::exception& e) {
+    return std::unexpected(std::string("message could not be built: ") + e.what());
+  } catch (...) {
+    return std::unexpected(std::string("message could not be built (unknown exception)"));
+  }
+}
 
 }
 
@@ -108,44 +167,41 @@ std::optional<DecodeError> readMessage(std::span<const uint8_t> bytes, const Mes
   }
 }
 
+std::size_t serializedBytes(capnp::MessageBuilder& message) {
+  return capnp::computeSerializedSizeInWords(message) * sizeof(capnp::word);
+}
+
+void serializeInto(capnp::MessageBuilder& message, std::span<uint8_t> out) {
+  kj::ArrayOutputStream stream(kj::arrayPtr(reinterpret_cast<kj::byte*>(out.data()), out.size()));
+  capnp::writeMessage(stream, message);
+}
+
 std::expected<std::vector<uint8_t>, std::string> buildMessage(const MessageBuildFn& build) {
-  NoStackTraceCallback noStackTraces;
-  try {
-    const auto flat = [](capnp::MessageBuilder& message) {
-      std::vector<uint8_t> out(capnp::computeSerializedSizeInWords(message) * sizeof(capnp::word));
-      kj::ArrayOutputStream stream(kj::arrayPtr(reinterpret_cast<kj::byte*>(out.data()), out.size()));
-      capnp::writeMessage(stream, message);
-      return out;
-    };
-    ReusedSegment& reused = tReused;
-    if (reused.busy) {
-      capnp::MallocMessageBuilder message;
-      build(message);
-      return flat(message);
-    }
-    if (reused.words == nullptr) {
-      reused.words = kj::heapArray<capnp::word>(kReusedSegmentWords);
-      std::memset(reused.words.begin(), 0, reused.words.size() * sizeof(capnp::word));
-    }
-    reused.busy = true;
-    struct Release {
-      bool& busy;
-      ~Release() { busy = false; }
-    } release{reused.busy};
-    // WHY: The builder is destroyed before release: it zeroes the segment,
-    // which must be zero before another builder takes it.
-    capnp::MallocMessageBuilder message(reused.words.asPtr());
-    build(message);
-    return flat(message);
-  } catch (const kj::Exception& e) {
-    return std::unexpected(std::string("message could not be built: ") + e.getDescription().cStr());
-  } catch (const std::bad_alloc&) {
-    return std::unexpected(std::string("out of memory while building message"));
-  } catch (const std::exception& e) {
-    return std::unexpected(std::string("message could not be built: ") + e.what());
-  } catch (...) {
-    return std::unexpected(std::string("message could not be built (unknown exception)"));
-  }
+  return guarded([&] {
+    PooledBuilder message;
+    build(message.get());
+    std::vector<uint8_t> out(serializedBytes(message.get()));
+    serializeInto(message.get(), out);
+    return out;
+  });
+}
+
+std::expected<Frame, std::string> buildFrame(const MessageBuildFn& build) {
+  return guarded([&] {
+    PooledBuilder message;
+    build(message.get());
+    return framed(message.get());
+  });
+}
+
+std::expected<Frame, std::string> buildFrame(const MessageBuildFn& inner, const NestedBuildFn& build) {
+  return guarded([&] {
+    PooledBuilder payload;
+    inner(payload.get());
+    PooledBuilder message;
+    build(message.get(), payload.get());
+    return framed(message.get());
+  });
 }
 
 }

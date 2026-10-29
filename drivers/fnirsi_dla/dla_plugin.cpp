@@ -62,9 +62,9 @@ std::expected<void, plugin::DeviceFailure> DlaPlugin::identify(const plugin::Fou
   const auto refused = [](std::string why) {
     return std::unexpected(plugin::DeviceFailure{plugin::DeviceProblem::other, std::move(why)});
   };
-  if (!device.setName(dlaDisplayName(*device_name))) return refused("SDK refused name of DLA " + unit.id);
-  if (!device.add(dlaAnalyzerInfo())) return refused("logic analyzer of " + unit.id + " was refused");
-  if (!device.add(dlaGeneratorInfo())) return refused("signal generator of " + unit.id + " was refused");
+  (void)device.setName(dlaDisplayName(*device_name));
+  if (auto added = device.add(dlaAnalyzerInfo()); !added) return refused(std::move(added.error()));
+  if (auto added = device.add(dlaGeneratorInfo()); !added) return refused(std::move(added.error()));
   return {};
 }
 

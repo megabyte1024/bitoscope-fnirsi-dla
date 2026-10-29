@@ -8,7 +8,9 @@
 
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -39,12 +41,14 @@ class LaRuntime final : public FacetHandler {
   struct Run;
 
   FacetAnswer start(const ipc::la::StartCapture& start);
-  void stopCapture(bool endRing);
+  std::optional<std::string> stopCapture(bool endRing);
+  bool stuckCaptureReturned();
 
   LogicAnalyzerRegistration registration_;
   const std::vector<ipc::props::PropertyValue>& properties_;
   plugin_ring::CaptureRing ring_;
   std::unique_ptr<Run> run_;
+  std::unique_ptr<Run> stuck_;
 };
 
 }

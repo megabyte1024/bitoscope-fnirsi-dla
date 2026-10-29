@@ -3,8 +3,10 @@
 add_library(bitoscope_driver_c_sdk STATIC
     src/c_api.cpp
     src/cpp_api.cpp
+    src/cpp_twins.cpp
     src/device_change_source.cpp
     src/device_bytes.cpp
+    src/device_location.cpp
     src/device_source.cpp
     src/device_watch.cpp
     src/driver_calls.cpp
@@ -18,6 +20,7 @@ add_library(bitoscope_driver_c_sdk STATIC
     src/usb_device_api.cpp
     src/usb_source.cpp
     src/usb_stream.cpp
+    src/usb_stream_properties.cpp
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

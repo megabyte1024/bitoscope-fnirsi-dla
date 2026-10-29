@@ -7,10 +7,10 @@ target_include_directories(fnirsi_protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(fnirsi_protocol PUBLIC cxx_std_23)
 bitoscope_enable_warnings(fnirsi_protocol)
 
-add_library(fnirsi_usb_transfer_config STATIC usb_transfer_config.cpp)
-target_include_directories(fnirsi_usb_transfer_config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_features(fnirsi_usb_transfer_config PUBLIC cxx_std_23)
-bitoscope_enable_warnings(fnirsi_usb_transfer_config)
+add_library(fnirsi_transfer_fill_time STATIC transfer_fill_time.cpp)
+target_include_directories(fnirsi_transfer_fill_time PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(fnirsi_transfer_fill_time PUBLIC cxx_std_23)
+bitoscope_enable_warnings(fnirsi_transfer_fill_time)
 
 add_library(fnirsi_channel_padding STATIC channel_padding.cpp)
 target_include_directories(fnirsi_channel_padding PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -38,7 +38,7 @@ bitoscope_enable_warnings(fnirsi_usb)
 add_library(fnirsi_dla_facets STATIC dla_analyzer.cpp dla_signal_generator.cpp dla_plugin.cpp)
 target_include_directories(fnirsi_dla_facets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fnirsi_dla_facets
-    PUBLIC bitoscope_driver_c_sdk fnirsi_protocol fnirsi_usb_transfer_config
+    PUBLIC bitoscope_driver_c_sdk fnirsi_protocol fnirsi_transfer_fill_time
     PRIVATE fnirsi_channel_padding fnirsi_data_rate_limit Threads::Threads)
 target_compile_features(fnirsi_dla_facets PUBLIC cxx_std_23)
 bitoscope_enable_warnings(fnirsi_dla_facets)

@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "bitoscope_driver_cpp.h"
+#include "device_location.h"
 #include "libusb_bus.h"
 #include "plugin_model.h"
 
@@ -244,18 +245,9 @@ std::expected<size_t, UsbError> transferOf(int status, size_t transferred) {
 }
 
 std::expected<UsbDevice, DeviceFailure> UsbDevice::open(const FoundDevice& device) {
-  bitoscope_found_device found{};
-  bitoscope_usb_location usb{};
-  found.id = device.id.c_str();
-  if (const UsbLocation* place = device.usb()) {
-    usb = bitoscope_usb_location{place->vendorId, place->productId, place->interfaceNumber, place->bus,
-                                 place->address,  place->ports.empty() ? nullptr : place->ports.data(),
-                                 place->ports.size()};
-    found.transport = BITOSCOPE_TRANSPORT_USB;
-    found.usb = &usb;
-  }
+  const plugin_c_sdk::CFoundDevice found(device.id, device.location, device.appearanceKey, nullptr);
   bitoscope_usb_device* opened = nullptr;
-  const int status = bitoscope_usb_open(&found, &opened, nullptr);
+  const int status = bitoscope_usb_open(&found.get(), &opened, nullptr);
   if (status != BITOSCOPE_OK) return std::unexpected(DeviceFailure{problemOf(status), bitoscope_usb_error_text()});
   return UsbDevice(opened);
 }

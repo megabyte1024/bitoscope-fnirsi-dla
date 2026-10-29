@@ -510,6 +510,11 @@ std::expected<std::unique_ptr<PluginProcess>, std::string> PluginProcess::start(
   posix_spawn_file_actions_adddup2(&actions, in[0], 0);
   posix_spawn_file_actions_adddup2(&actions, out[1], 1);
   posix_spawn_file_actions_adddup2(&actions, err[1], 2);
+  posix_spawnattr_t attributes;
+  posix_spawnattr_init(&attributes);
+  // WHY: Own process group: terminal's Ctrl+C must reach only the host, which stops the plugin by protocol.
+  posix_spawnattr_setpgroup(&attributes, 0);
+  posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
 
   const std::string program = options.executable.string();
   std::vector<std::string> args{program};
@@ -521,7 +526,7 @@ std::expected<std::unique_ptr<PluginProcess>, std::string> PluginProcess::start(
   pid_t pid = -1;
   int spawned = 0;
   std::optional<std::string> notPlaced;
-  const auto spawn = [&] { spawned = posix_spawn(&pid, program.c_str(), &actions, nullptr, argv.data(), environ); };
+  const auto spawn = [&] { spawned = posix_spawn(&pid, program.c_str(), &actions, &attributes, argv.data(), environ); };
   if (options.placement.asksNothing()) {
     spawn();
   } else {
@@ -534,6 +539,7 @@ std::expected<std::unique_ptr<PluginProcess>, std::string> PluginProcess::start(
     });
     spawner.join();
   }
+  posix_spawnattr_destroy(&attributes);
   posix_spawn_file_actions_destroy(&actions);
   ::close(in[0]);
   ::close(out[1]);

@@ -4,7 +4,9 @@
 
 #include "ipc_messages.h"
 
+#include <algorithm>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -174,6 +176,12 @@ void buildBody(w::Envelope::Builder root, const Refusal& in) {
   auto out = root.initRefusal();
   if (!in.message.empty()) out.setMessage(asText(in.message));
   out.setUnknownMember(in.unknownMember);
+}
+
+void buildEnvelope(capnp::MessageBuilder& message, const Envelope& envelope) {
+  auto root = message.initRoot<w::Envelope>();
+  root.setRequestId(envelope.requestId);
+  std::visit([&](const auto& body) { buildBody(root, body); }, envelope.body);
 }
 
 std::vector<std::string> readTexts(capnp::List<capnp::Text>::Reader in) {
@@ -366,10 +374,22 @@ std::optional<DecodeError> readBody(w::Envelope::Reader root, Body& body) {
 }
 
 std::expected<Bytes, std::string> encodeEnvelope(const Envelope& envelope) {
-  return detail::buildMessage([&](capnp::MessageBuilder& message) {
-    auto root = message.initRoot<w::Envelope>();
-    root.setRequestId(envelope.requestId);
-    std::visit([&](const auto& body) { buildBody(root, body); }, envelope.body);
+  return detail::buildMessage([&](capnp::MessageBuilder& message) { buildEnvelope(message, envelope); });
+}
+
+std::expected<Frame, std::string> encodeFrame(const Envelope& envelope) {
+  return detail::buildFrame([&](capnp::MessageBuilder& message) { buildEnvelope(message, envelope); });
+}
+
+std::expected<Frame, std::string> encodeFacetEventFrame(std::string_view facet, const detail::MessageBuildFn& payload) {
+  return detail::buildFrame(payload, [&](capnp::MessageBuilder& message, capnp::MessageBuilder& event) {
+    auto out = message.initRoot<w::Envelope>().initFacetEvent();
+    if (!facet.empty()) {
+      auto text = out.initFacet(static_cast<unsigned>(facet.size()));
+      std::copy(facet.begin(), facet.end(), text.begin());
+    }
+    auto bytes = out.initPayload(static_cast<unsigned>(detail::serializedBytes(event)));
+    detail::serializeInto(event, std::span<uint8_t>(bytes.begin(), bytes.size()));
   });
 }
 

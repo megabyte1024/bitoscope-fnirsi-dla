@@ -25,7 +25,9 @@ struct LogicAnalyzerRegistration {
   bitoscope_prepare_fn prepare = nullptr;
   std::vector<uint64_t> rateCeilingsMilliHz;
   std::string rateCeilingReason;
-  bitoscope_apply_properties_fn applyProperties = nullptr;
+  bitoscope_apply_during_capture_fn applyDuringCapture = nullptr;
+  uint32_t silenceLimitMs = 0;
+  bool usbStreamProperties = false;
 };
 
 struct SignalGeneratorRegistration {

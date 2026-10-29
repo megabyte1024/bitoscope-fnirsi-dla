@@ -7,9 +7,12 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <exception>
 #include <expected>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
@@ -25,13 +28,14 @@
 #include "facet_properties.h"
 #include "frame_output.h"
 #include "sink_facts.h"
+#include "usb_stream_properties.h"
 
 using bitoscope::plugin_ring::CaptureRing;
 using bitoscope::plugin_ring::RingChunk;
 using bitoscope::plugin_ring::RingWriteError;
 using bitoscope::plugin_ring::RingWriteErrorKind;
 
-// WHY: Sink fields are written on the capture thread only, except the two flags the main loop sets to stop it.
+// WHY: Sink fields are written on the capture thread only, except the atomics the main loop and watchdog set.
 struct bitoscope_sink {
   CaptureRing* ring = nullptr;
   uint64_t captureId = 0;
@@ -45,10 +49,16 @@ struct bitoscope_sink {
   std::optional<bitoscope::plugin_c_sdk::DeviceByteCompactor> bytes;
   std::vector<uint8_t> scratch;
   bool written = false;
+  uint32_t silenceLimitMs = 0;
+  std::optional<bitoscope::plugin_c_sdk::UsbStreamChoice> usbChoice;
 
   bool starting = false;
   std::atomic<bool> stopRequested{false};
   std::atomic<bool> abandoned{false};
+  std::atomic<bool> stalled{false};
+  std::atomic<bool> waitingForRoom{false};
+  std::atomic<bool> streamWatchesSilence{false};
+  std::atomic<uint64_t> progress{0};
 
   uint64_t next = 0;
   bool delivering = true;
@@ -80,12 +90,32 @@ bool refusedInStart(const bitoscope_sink& sink, const char* what) {
   return true;
 }
 
+int failStalled(bitoscope_sink& sink) {
+  return failDelivery(sink,
+                      "device stalled: no sample in " + std::to_string(sink.silenceLimitMs) + " ms after " +
+                          std::to_string(sink.next) + " samples",
+                      true);
+}
+
 int gate(bitoscope_sink& sink) {
   if (refusedInStart(sink, "write")) return BITOSCOPE_CAPTURE_OVER;
   if (!sink.delivering || sink.abandoned.load()) return over(sink);
   // WHY: A buffered capture writes out what its device holds AFTER STOP; a streaming one stops writing.
   if (!sink.buffered && sink.stopRequested.load()) return over(sink);
+  if (sink.stalled.load()) return failStalled(sink);
   return BITOSCOPE_OK;
+}
+
+std::expected<std::span<uint8_t>, RingWriteError> roomFor(bitoscope_sink& sink, uint64_t bytes, bool wait) {
+  sink.waitingForRoom = wait;
+  auto room = sink.ring->beginChunk(sink.captureId, bytes, wait);
+  sink.waitingForRoom = false;
+  return room;
+}
+
+void advance(bitoscope_sink& sink, uint64_t samples) {
+  sink.next += samples;
+  sink.progress.store(sink.next, std::memory_order_relaxed);
 }
 
 // WHY: STOP cancelling a wait is not a failure; the ring already holds its own failures.
@@ -131,7 +161,7 @@ void compactInto(const bitoscope_sink& sink, const uint8_t* device, uint64_t sam
 }
 
 int delivered(bitoscope_sink& sink, uint64_t samples) {
-  sink.next += samples;
+  advance(sink, samples);
   if (sink.limit != 0 && sink.next >= sink.limit) return over(sink);
   return BITOSCOPE_OK;
 }
@@ -179,7 +209,7 @@ int write(bitoscope_sink* sink, const void* samples, uint64_t count, bool wait) 
     if (const int status = gate(*sink); status != BITOSCOPE_OK) return status;
     const uint64_t n = (std::min)(perChunk, take - done);
     const uint64_t pieceBytes = bytesFor(*sink, n);
-    auto room = sink->ring->beginChunk(sink->captureId, pieceBytes, true);
+    auto room = roomFor(*sink, pieceBytes, true);
     if (!room) return ringError(*sink, room.error());
     if (copies) {
       std::memcpy(room->data(), bytes + offset, static_cast<size_t>(pieceBytes));
@@ -189,7 +219,7 @@ int write(bitoscope_sink* sink, const void* samples, uint64_t count, bool wait) 
     auto committed = sink->ring->commitChunk(
         RingChunk{sink->next, sink->rateMilliHz, sink->numChannels, n, sink->encoding}, pieceBytes);
     if (!committed) return ringError(*sink, committed.error());
-    sink->next += n;
+    advance(*sink, n);
     done += n;
     offset += driverBytesFor(*sink, n);
   }
@@ -214,7 +244,7 @@ void* beginSamples(bitoscope_sink* sink, uint64_t max_samples, bool wait, Room r
     return nullptr;
   }
   const uint64_t bytes = room == Room::deviceBytes ? driverBytesFor(*sink, max_samples) : bytesFor(*sink, max_samples);
-  auto begun = sink->ring->beginChunk(sink->captureId, bytes, wait);
+  auto begun = roomFor(*sink, bytes, wait);
   if (!begun) {
     (void)ringError(*sink, begun.error());
     return nullptr;
@@ -269,6 +299,8 @@ SinkStreamFacts sinkStreamFacts(const bitoscope_sink& sink) {
   facts.rateMilliHz = sink.rateMilliHz;
   facts.buffered = sink.buffered;
   facts.starting = sink.starting;
+  facts.silenceLimitMs = sink.silenceLimitMs;
+  facts.usbChoice = sink.usbChoice;
   facts.chunkSamples = samplesPerChunk(sink, Room::capturedBytes);
   if (sink.bytes) {
     facts.unitSamples = sink.bytes->unitSamples();
@@ -278,12 +310,88 @@ SinkStreamFacts sinkStreamFacts(const bitoscope_sink& sink) {
   return facts;
 }
 
+SilenceWatchedByStream::SilenceWatchedByStream(bitoscope_sink& sink) : sink_(sink) { sink_.streamWatchesSilence = true; }
+
+SilenceWatchedByStream::~SilenceWatchedByStream() { sink_.streamWatchesSilence = false; }
+
+namespace {
+
+constexpr std::chrono::milliseconds kStopLimit{BITOSCOPE_STOP_LIMIT_MS};
+constexpr const char* kStuckRefusal = "START refused: capture function of earlier capture has not returned since its STOP";
+
+std::string stopLimitText() {
+  return "capture function did not return within " + std::to_string(BITOSCOPE_STOP_LIMIT_MS) + " ms of STOP";
+}
+
+bool watchesSilence(const bitoscope_sink& sink) {
+  return !sink.buffered && sink.silenceLimitMs != 0 && sink.silenceLimitMs != BITOSCOPE_NO_SILENCE_LIMIT;
+}
+
+bool silenceCounts(const bitoscope_sink& sink, uint64_t written) {
+  if (written == 0) return false;
+  if (sink.limit != 0 && written >= sink.limit) return false;
+  return !sink.waitingForRoom.load() && !sink.streamWatchesSilence.load() && !sink.stopRequested.load() &&
+         !sink.abandoned.load();
+}
+
+}
+
 struct LaRuntime::Run {
   bitoscope_sink sink;
   bitoscope_capture capture{};
   std::vector<ipc::props::PropertyValue> properties;
   std::vector<bitoscope_property_value> cProperties;
   std::thread thread;
+  std::thread watchdog;
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool returned = false;
+
+  void markReturned() {
+    {
+      std::lock_guard lock(mutex);
+      returned = true;
+    }
+    changed.notify_all();
+  }
+
+  bool hasReturned() {
+    std::lock_guard lock(mutex);
+    return returned;
+  }
+
+  bool waitReturned(std::chrono::milliseconds limit) {
+    std::unique_lock lock(mutex);
+    return changed.wait_for(lock, limit, [this] { return returned; });
+  }
+
+  void join() {
+    if (thread.joinable()) thread.join();
+    if (watchdog.joinable()) watchdog.join();
+  }
+
+  void watchSilence() {
+    const std::chrono::milliseconds limit{sink.silenceLimitMs};
+    const auto period = std::clamp<std::chrono::milliseconds>(limit / 8, std::chrono::milliseconds(1),
+                                                              std::chrono::milliseconds(100));
+    std::unique_lock lock(mutex);
+    uint64_t seen = sink.progress.load(std::memory_order_relaxed);
+    auto quietSince = std::chrono::steady_clock::now();
+    while (!changed.wait_for(lock, period, [this] { return returned; })) {
+      const uint64_t written = sink.progress.load(std::memory_order_relaxed);
+      const auto now = std::chrono::steady_clock::now();
+      if (written != seen || !silenceCounts(sink, written)) {
+        seen = written;
+        quietSince = now;
+        continue;
+      }
+      if (now - quietSince >= limit) {
+        // WHY: Only set the flag: the capture thread fails the capture itself, so no sink field is written here.
+        sink.stalled = true;
+        return;
+      }
+    }
+  }
 };
 
 LaRuntime::LaRuntime(const LogicAnalyzerRegistration& registration,
@@ -294,25 +402,48 @@ LaRuntime::~LaRuntime() { abandon(); }
 
 std::expected<void, ApplyRefusal> LaRuntime::apply(std::span<const ipc::props::PropertyValue> values, bool capturing) {
   if (!capturing) return {};
-  return applyThrough(registration_.applyProperties, registration_.session, values, capturing);
+  return applyThrough(registration_.applyDuringCapture, registration_.session, values);
 }
 
 void LaRuntime::abandon() {
-  if (!run_) return;
-  run_->sink.abandoned = true;
+  if (!run_ && !stuck_) return;
+  for (Run* run : {run_.get(), stuck_.get()}) {
+    if (run != nullptr) run->sink.abandoned = true;
+  }
   ring_.cancelWaits();
-  if (run_->thread.joinable()) run_->thread.join();
-  run_.reset();
+  for (std::unique_ptr<Run>* run : {&run_, &stuck_}) {
+    if (*run) (*run)->join();
+    run->reset();
+  }
 }
 
-void LaRuntime::stopCapture(bool endRing) {
-  if (!run_) return;
+std::optional<std::string> LaRuntime::stopCapture(bool endRing) {
+  if (!run_) return std::nullopt;
   run_->sink.stopRequested = true;
   // WHY: A streaming write waiting for room gives up; a buffered capture is still writing out and must finish.
   if (!run_->sink.buffered) ring_.cancelWaits();
-  if (run_->thread.joinable()) run_->thread.join();
+  if (!run_->waitReturned(kStopLimit)) {
+    // WHY: Keep the ring open: the capture thread may still hold a begun chunk in it.
+    run_->sink.abandoned = true;
+    ring_.cancelWaits();
+    const std::string text = stopLimitText();
+    logLine(ipc::LogLevel::error, text + "; every START is refused until it returns");
+    stuck_ = std::move(run_);
+    return text;
+  }
+  run_->join();
   if (endRing) ring_.endCapture();
   run_.reset();
+  return std::nullopt;
+}
+
+bool LaRuntime::stuckCaptureReturned() {
+  if (!stuck_) return true;
+  if (!stuck_->hasReturned()) return false;
+  stuck_->join();
+  ring_.endCapture();
+  stuck_.reset();
+  return true;
 }
 
 namespace {
@@ -325,7 +456,9 @@ void runCapture(const LogicAnalyzerRegistration& la, bitoscope_sink& sink, const
   } catch (...) {
     (void)failDelivery(sink, "capture function threw", !sink.failure);
   }
-  if (sink.stopRequested.load() || sink.abandoned.load()) return;
+  const bool stopped = sink.stopRequested.load() || sink.abandoned.load();
+  if (sink.stalled.load() && !sink.failure && !stopped) (void)failStalled(sink);
+  if (stopped) return;
 
   ipc::la::CaptureEnded ended{sink.captureId, ipc::la::EndReason::failure, {}};
   if (sink.failure) {
@@ -359,11 +492,13 @@ FacetAnswer LaRuntime::handle(std::span<const uint8_t> payload) {
   }
   if (const auto* s = std::get_if<ipc::la::StartCapture>(&*command)) return start(*s);
   const bool wasRunning = run_ != nullptr;
-  stopCapture(true);
+  if (auto stuck = stopCapture(true)) return ipc::FacetReply{false, std::move(*stuck), {}};
+  if (!stuckCaptureReturned()) return ipc::FacetReply{false, stopLimitText(), {}};
   return ipc::FacetReply{true, wasRunning ? "capture stopped" : "no capture was running", {}};
 }
 
 FacetAnswer LaRuntime::start(const ipc::la::StartCapture& s) {
+  if (!stuckCaptureReturned()) return ipc::FacetReply{false, kStuckRefusal, {}};
   const uint32_t channels = registration_.numChannels;
   if (channels < 32 && (s.channelMask >> channels) != 0) {
     const int highest = 31 - std::countl_zero(s.channelMask);
@@ -390,7 +525,7 @@ FacetAnswer LaRuntime::start(const ipc::la::StartCapture& s) {
                                " was asked for" + (reason.empty() ? "" : ": " + reason),
                            {}};
   }
-  stopCapture(true);
+  if (auto stuck = stopCapture(true)) return ipc::FacetReply{false, "START refused: " + *stuck, {}};
   if (auto opened = ring_.beginCapture(s.bulkRingName, s.captureId); !opened) {
     return ipc::FacetReply{false, "START refused: " + opened.error(), {}};
   }
@@ -402,6 +537,7 @@ FacetAnswer LaRuntime::start(const ipc::la::StartCapture& s) {
   run->sink.numChannels = static_cast<uint32_t>(std::popcount(s.channelMask));
   run->sink.deviceChannels = channels;
   run->sink.channelMask = s.channelMask;
+  run->sink.silenceLimitMs = registration_.silenceLimitMs;
   if (auto chosen = describeBytes(run->sink, registration_.deviceBytes); !chosen) {
     ring_.captureStarted(false);
     return ipc::FacetReply{false, "START refused: " + chosen.error(), {}};
@@ -417,6 +553,7 @@ FacetAnswer LaRuntime::start(const ipc::la::StartCapture& s) {
   run->cProperties = cValues(run->properties);
   run->capture.properties = run->cProperties.empty() ? nullptr : run->cProperties.data();
   run->capture.num_properties = run->cProperties.size();
+  if (registration_.usbStreamProperties) run->sink.usbChoice = usbStreamChoice(run->properties);
   if (registration_.prepare != nullptr) {
     bitoscope_reply reply;
     int status = BITOSCOPE_ERROR;
@@ -444,8 +581,14 @@ FacetAnswer LaRuntime::start(const ipc::la::StartCapture& s) {
   }
   try {
     Run* r = run.get();
-    run->thread = std::thread([this, r] { runCapture(registration_, r->sink, r->capture); });
+    if (watchesSilence(r->sink)) r->watchdog = std::thread([r] { r->watchSilence(); });
+    run->thread = std::thread([this, r] {
+      runCapture(registration_, r->sink, r->capture);
+      r->markReturned();
+    });
   } catch (const std::system_error& e) {
+    run->markReturned();
+    run->join();
     ring_.captureStarted(false);
     return ipc::FacetReply{false, std::string("START refused: no capture thread could be started: ") + e.what(), {}};
   }
@@ -524,10 +667,12 @@ uint64_t bitoscope_sample_bytes(const bitoscope_sink* sink, uint64_t num_samples
 
 int bitoscope_stopping(const bitoscope_sink* sink) {
   if (sink == nullptr) return 1;
-  return sink->stopRequested.load() || sink->abandoned.load() ? 1 : 0;
+  return sink->stopRequested.load() || sink->abandoned.load() || sink->stalled.load() ? 1 : 0;
 }
 
-int bitoscope_capture_failed(const bitoscope_sink* sink) { return sink != nullptr && sink->failure ? 1 : 0; }
+int bitoscope_capture_failed(const bitoscope_sink* sink) {
+  return sink != nullptr && (sink->failure || sink->stalled.load()) ? 1 : 0;
+}
 
 int bitoscope_set_device_bytes(bitoscope_sink* sink, const bitoscope_device_bytes* bytes) {
   try {

@@ -8,8 +8,10 @@
 #include <expected>
 #include <mutex>
 #include <string>
+#include <string_view>
 
 #include "ipc_byte_stream.h"
+#include "ipc_capnp_boundary.h"
 #include "ipc_frame.h"
 #include "ipc_messages.h"
 
@@ -25,6 +27,7 @@ class FrameOutput {
   explicit FrameOutput(ipc::ByteSink& sink);
 
   std::expected<void, SendError> send(const ipc::Envelope& envelope);
+  std::expected<void, SendError> sendFacetEvent(std::string_view facet, const ipc::detail::MessageBuildFn& payload);
 
   void setConnected(bool connected) { connected_.store(connected); }
   bool connected() const { return connected_.load(); }
@@ -33,6 +36,8 @@ class FrameOutput {
   const std::string& deviceId() const { return deviceId_; }
 
  private:
+  std::expected<void, SendError> write(const std::expected<ipc::Frame, std::string>& frame);
+
   std::mutex mutex_;
   ipc::FrameWriter writer_;
   bool broken_ = false;
@@ -57,6 +62,7 @@ class ActiveOutput {
 void logLine(ipc::LogLevel level, const std::string& message);
 
 std::expected<void, std::string> sendFacetEvent(std::string facet, ipc::Bytes payload);
+std::expected<void, std::string> sendFacetEvent(std::string_view facet, const ipc::detail::MessageBuildFn& payload);
 
 std::expected<void, std::string> sendDeviceLost(std::string reason);
 

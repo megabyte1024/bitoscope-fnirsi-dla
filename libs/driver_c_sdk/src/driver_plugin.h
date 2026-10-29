@@ -21,4 +21,7 @@ std::unique_ptr<FacetHandler> makeGenericFacet(std::string name, GenericRegistra
 std::expected<void, ApplyRefusal> applyThrough(bitoscope_apply_properties_fn apply, void* user,
                                                std::span<const ipc::props::PropertyValue> values, bool capturing);
 
+std::expected<void, ApplyRefusal> applyThrough(bitoscope_apply_during_capture_fn apply, void* user,
+                                               std::span<const ipc::props::PropertyValue> values);
+
 }

@@ -113,7 +113,7 @@ void printPlan(const tools::SoakOptions& o, const std::vector<tools::CheckedChan
                 "driver until it restarts)\n",
                 *o.usb_transfer_kib);
   } else {
-    std::printf("  USB transfers: driver's own (8, each about 0.1 s of data, 16 KiB to 1 MiB)\n");
+    std::printf("  USB transfers: automatic (8, each about 0.1 s of data, at most 1 MiB)\n");
   }
   std::printf("  Ring: %u slots of 4 MiB; checker: %s; %s\n", o.ringSlots(),
               o.check_threads == 0 ? "on ring reader's thread" : (std::to_string(o.check_threads) + " thread(s)").c_str(),
@@ -148,7 +148,7 @@ void printSummary(const tools::SoakOptions& o, const tools::SoakFacts& f, const 
               static_cast<unsigned long long>(o.rate_hz), o.channelCount(), inputText(o.channel_mask).c_str(),
               static_cast<double>(bits) / 1e9,
               static_cast<double>(bits) / 8e6, static_cast<unsigned long long>(o.seconds),
-              o.usb_transfer_kib ? (std::to_string(*o.usb_transfer_kib) + " KiB").c_str() : "driver's",
+              o.usb_transfer_kib ? (std::to_string(*o.usb_transfer_kib) + " KiB").c_str() : "automatic",
               f.ring_slots);
   const double achieved = f.wall_seconds > 0 ? static_cast<double>(f.bytes) / 1e6 / f.wall_seconds : 0.0;
   std::printf("Received: %.1f MB in %llu chunks over %.3f s = %.1f MB/s; that is %.3f s of signal (samples per "

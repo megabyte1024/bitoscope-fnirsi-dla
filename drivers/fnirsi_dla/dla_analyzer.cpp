@@ -13,7 +13,7 @@
 
 #include "channel_padding.h"
 #include "data_rate_limit.h"
-#include "usb_transfer_config.h"
+#include "transfer_fill_time.h"
 
 namespace fnirsi {
 
@@ -21,17 +21,10 @@ namespace {
 
 constexpr std::string_view kThresholdId = "threshold";
 constexpr std::string_view kPrerollId = "preroll";
-constexpr std::string_view kUsbTransfersId = "usb_transfers";
-constexpr std::string_view kUsbTransferKibId = "usb_transfer_kib";
 constexpr int64_t kThresholdLimitCentivolts = 500;
 constexpr int64_t kDefaultThresholdCentivolts = 160;
 constexpr int32_t kMillivoltsPerCentivolt = 10;
 constexpr const char* kDeviceName = "DLA";
-
-int64_t integerOf(const bitoscope::plugin::Capture& capture, std::string_view id, int64_t fallback) {
-  const auto it = capture.properties.find(id);
-  return it == capture.properties.end() ? fallback : it->second.integer;
-}
 
 }
 
@@ -61,15 +54,7 @@ std::vector<bitoscope::plugin::PropertyNode> dlaAnalyzerProperties() {
           "Diagnostics",
           {property(kPrerollId, "Pre-roll",
                     plugin::DecimalType{3, 0, int64_t{kMaxPrerollMs}, int64_t{kDefaultPrerollMs}}, plugin::Unit::second,
-                    "Time dropped at start of streaming capture, so changed threshold settles."),
-           property(kUsbTransfersId, "USB transfers",
-                    plugin::IntegerType{int64_t{kMinUsbTransfers}, int64_t{kMaxUsbTransfers},
-                                        int64_t{kDefaultUsbTransfers}},
-                    plugin::Unit::none, "USB transfers kept in flight while streaming; diagnostic setting."),
-           property(kUsbTransferKibId, "USB transfer size (KiB)",
-                    plugin::IntegerType{int64_t{kMinUsbTransferKib}, int64_t{kMaxUsbTransferKib},
-                                        int64_t{kDefaultUsbTransferKib}},
-                    plugin::Unit::none, "Size of each USB transfer, in KiB; diagnostic setting.")}}},
+                    "Time dropped at start of streaming capture, so changed threshold settles.")}}},
   };
 }
 
@@ -80,6 +65,7 @@ bitoscope::plugin::LogicAnalyzerInfo dlaAnalyzerInfo() {
   info.numChannels = kDlaChannels;
   for (const auto& entry : kRateTable) info.sampleRatesMilliHz.push_back(entry.hz * 1000);
   info.properties = dlaAnalyzerProperties();
+  info.usbStreamProperties = true;
   for (uint32_t n = 1; n <= kDlaChannels; ++n) info.rateCeilingsMilliHz.push_back(rateCeilingHz(n).value_or(0) * 1000);
   info.rateCeilingReason = kRateCeilingReason;
   // WHY: Wires 1 to 4 of a socket are red, yellow, blue, green; a palette entry's identifier is one past its
@@ -96,12 +82,9 @@ std::expected<void, std::string> DlaAnalyzer::prepare(const bitoscope::plugin::C
   const uint64_t hz = capture.sampleRateMilliHz / 1000;
 
   const int32_t threshold_millivolts =
-      static_cast<int32_t>(integerOf(capture, kThresholdId, kDefaultThresholdCentivolts)) * kMillivoltsPerCentivolt;
-  const uint32_t preroll_ms = static_cast<uint32_t>(integerOf(capture, kPrerollId, kDefaultPrerollMs));
-  UsbTransferConfig usb;
-  usb.transfers = static_cast<uint32_t>(integerOf(capture, kUsbTransfersId, kDefaultUsbTransfers));
-  usb.transfer_kib = static_cast<uint32_t>(integerOf(capture, kUsbTransferKibId, kDefaultUsbTransferKib));
-  usb.transfer_kib_configured = usb.transfer_kib != kDefaultUsbTransferKib;
+      static_cast<int32_t>(capture.integer(kThresholdId)) * kMillivoltsPerCentivolt;
+  const uint32_t preroll_ms = static_cast<uint32_t>(capture.integer(kPrerollId));
+  const auto transfer_kib = static_cast<uint32_t>(capture.integer(BITOSCOPE_USB_TRANSFER_KIB_PROPERTY));
 
   // WHY: Buffer mode needs an exact sample count as depth; streaming mode is depth 0 whatever the limit.
   const uint32_t depth = capture.buffered ? static_cast<uint32_t>(std::min<uint64_t>(capture.sampleLimit, 0xFFFFFFFFu)) : 0;
@@ -111,7 +94,9 @@ std::expected<void, std::string> DlaAnalyzer::prepare(const bitoscope::plugin::C
   if (!recorded) return std::unexpected(recorded.error());
   const auto user_channels = static_cast<uint32_t>(std::popcount(capture.channelMask));
   const auto device_channels = static_cast<uint32_t>(std::popcount(*recorded));
-  if (auto fills = checkTransferFillTime(usb, hz, device_channels); !fills) return std::unexpected(fills.error());
+  if (auto fills = checkTransferFillTime(transfer_kib, hz, device_channels); !fills) {
+    return std::unexpected(fills.error());
+  }
 
   auto param_setting = buildParameterSetting(hz, threshold_millivolts, depth);
   if (!param_setting.has_value()) return std::unexpected(param_setting.error());
@@ -126,8 +111,6 @@ std::expected<void, std::string> DlaAnalyzer::prepare(const bitoscope::plugin::C
   stream_.stop = [this] { return stopDevice(); };
   stream_.drain = true;
   stream_.prerollSamples = capture.buffered ? 0 : prerollSamples(preroll_ms, hz);
-  stream_.transferBytes = streamTransferBytes(usb, hz, device_channels);
-  stream_.transfers = usb.transfers;
   stream_.lagLimitBytes = kDeliveryLagLimitBytes;
   stream_.deviceName = kDeviceName;
   started_line_ = "capture started: " + std::to_string(hz) + " Hz, " + std::to_string(user_channels) + " channel(s), " +

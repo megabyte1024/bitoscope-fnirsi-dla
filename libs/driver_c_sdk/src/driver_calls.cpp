@@ -7,7 +7,6 @@
 #include <exception>
 #include <memory>
 #include <utility>
-#include <variant>
 
 #include "plugin_session.h"
 
@@ -32,65 +31,6 @@ Attempt attempt(DriverCall call, Function&& function) {
   return result;
 }
 
-}
-
-GivenDevice::GivenDevice(const SourceDevice& device, const bitoscope_connection& connection) {
-  device_.id = device.id.c_str();
-  device_.connection = &connection;
-  device_.appearance_key = device.appearanceKey.empty() ? nullptr : device.appearanceKey.c_str();
-  if (const auto* usb = std::get_if<UsbLocation>(&device.location)) {
-    usb_.vendor_id = usb->vendorId;
-    usb_.product_id = usb->productId;
-    usb_.interface_number = usb->interfaceNumber;
-    usb_.bus = usb->bus;
-    usb_.address = usb->address;
-    usb_.ports = usb->ports.empty() ? nullptr : usb->ports.data();
-    usb_.num_ports = usb->ports.size();
-    device_.transport = BITOSCOPE_TRANSPORT_USB;
-    device_.usb = &usb_;
-  } else if (const auto* serial = std::get_if<SerialLocation>(&device.location)) {
-    serial_.port = serial->port.c_str();
-    device_.transport = BITOSCOPE_TRANSPORT_SERIAL;
-    device_.serial = &serial_;
-  } else if (const auto* network = std::get_if<NetworkLocation>(&device.location)) {
-    network_.address = network->address.c_str();
-    network_.port = network->port;
-    device_.transport = BITOSCOPE_TRANSPORT_NETWORK;
-    device_.network = &network_;
-  }
-}
-
-std::expected<SourceDevice, std::string> sourceDeviceOf(const bitoscope_found_device& device) {
-  SourceDevice out;
-  out.id = device.id;
-  if (device.appearance_key != nullptr) out.appearanceKey = device.appearance_key;
-  const std::string about = "device \"" + out.id + "\"";
-  switch (device.transport) {
-    case BITOSCOPE_TRANSPORT_NONE:
-      return out;
-    case BITOSCOPE_TRANSPORT_USB: {
-      if (device.usb == nullptr) return std::unexpected(about + " is on BITOSCOPE_TRANSPORT_USB but gives no usb place");
-      UsbLocation usb{device.usb->vendor_id, device.usb->product_id, device.usb->interface_number,
-                      device.usb->bus,       device.usb->address,    {}};
-      if (device.usb->ports != nullptr) usb.ports.assign(device.usb->ports, device.usb->ports + device.usb->num_ports);
-      out.location = std::move(usb);
-      return out;
-    }
-    case BITOSCOPE_TRANSPORT_SERIAL:
-      if (device.serial == nullptr || device.serial->port == nullptr || device.serial->port[0] == '\0') {
-        return std::unexpected(about + " is on BITOSCOPE_TRANSPORT_SERIAL but gives no serial port name");
-      }
-      out.location = SerialLocation{device.serial->port};
-      return out;
-    case BITOSCOPE_TRANSPORT_NETWORK:
-      if (device.network == nullptr || device.network->address == nullptr || device.network->address[0] == '\0') {
-        return std::unexpected(about + " is on BITOSCOPE_TRANSPORT_NETWORK but gives no network address");
-      }
-      out.location = NetworkLocation{device.network->address, device.network->port};
-      return out;
-  }
-  return std::unexpected(about + " has transport " + std::to_string(static_cast<int>(device.transport)) +
-                         ", none of BITOSCOPE_TRANSPORT_NONE, _USB, _SERIAL, _NETWORK");
 }
 
 std::string functionName(DriverCall call) { return call == DriverCall::open ? "open" : "identify"; }

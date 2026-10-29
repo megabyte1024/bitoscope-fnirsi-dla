@@ -13,30 +13,14 @@
 #include <variant>
 #include <vector>
 
+#include "bitoscope_driver_cpp.h"
+
 namespace bitoscope::plugin_c_sdk {
 
-struct UsbLocation {
-  uint16_t vendorId = 0;
-  uint16_t productId = 0;
-  uint8_t interfaceNumber = 0;
-  uint8_t bus = 0;
-  uint8_t address = 0;
-  std::vector<uint8_t> ports;
-  bool operator==(const UsbLocation&) const = default;
-};
-
-struct SerialLocation {
-  std::string port;
-  bool operator==(const SerialLocation&) const = default;
-};
-
-struct NetworkLocation {
-  std::string address;
-  uint16_t port = 0;
-  bool operator==(const NetworkLocation&) const = default;
-};
-
-using DeviceLocation = std::variant<std::monostate, UsbLocation, SerialLocation, NetworkLocation>;
+using UsbLocation = plugin::UsbLocation;
+using SerialLocation = plugin::SerialLocation;
+using NetworkLocation = plugin::NetworkLocation;
+using DeviceLocation = plugin::Location;
 
 struct SourceDevice {
   std::string id;

@@ -8,10 +8,13 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
+#include "ipc_capnp_boundary.h"
 #include "ipc_decode_error.h"
+#include "ipc_frame.h"
 #include "ipc_properties.h"
 
 namespace bitoscope::ipc {
@@ -166,6 +169,8 @@ struct Envelope {
 };
 
 std::expected<Bytes, std::string> encodeEnvelope(const Envelope& envelope);
+std::expected<Frame, std::string> encodeFrame(const Envelope& envelope);
+std::expected<Frame, std::string> encodeFacetEventFrame(std::string_view facet, const detail::MessageBuildFn& payload);
 
 std::expected<Envelope, DecodeError> decodeEnvelope(std::span<const uint8_t> bytes);
 

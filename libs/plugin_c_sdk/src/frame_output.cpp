@@ -32,6 +32,17 @@ const char* levelName(ipc::LogLevel level) {
   return "log";
 }
 
+constexpr std::string_view kNotConnectedForEvent = "no host is connected (event can be sent once handshake is done)";
+
+template <class Send>
+std::expected<void, std::string> sendOnActive(std::string_view notConnected, const Send& send) {
+  std::lock_guard lock(gActiveMutex);
+  if (gActive == nullptr || !gActive->connected()) return std::unexpected(std::string(notConnected));
+  auto sent = send(*gActive);
+  if (!sent) return std::unexpected(sent.error().message);
+  return {};
+}
+
 int64_t nowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
       .count();
@@ -42,11 +53,19 @@ int64_t nowNs() {
 FrameOutput::FrameOutput(ipc::ByteSink& sink) : writer_(sink) {}
 
 std::expected<void, SendError> FrameOutput::send(const ipc::Envelope& envelope) {
-  auto bytes = ipc::encodeEnvelope(envelope);
-  if (!bytes) return std::unexpected(SendError{false, "message could not be encoded: " + bytes.error()});
+  return write(ipc::encodeFrame(envelope));
+}
+
+std::expected<void, SendError> FrameOutput::sendFacetEvent(std::string_view facet,
+                                                           const ipc::detail::MessageBuildFn& payload) {
+  return write(ipc::encodeFacetEventFrame(facet, payload));
+}
+
+std::expected<void, SendError> FrameOutput::write(const std::expected<ipc::Frame, std::string>& frame) {
+  if (!frame) return std::unexpected(SendError{false, "message could not be encoded: " + frame.error()});
   std::lock_guard lock(mutex_);
   if (broken_) return std::unexpected(SendError{true, "host's stream failed earlier"});
-  auto wrote = writer_.write(*bytes);
+  auto wrote = writer_.write(*frame);
   if (!wrote) {
     const bool broken = wrote.error().kind == ipc::FrameErrorKind::streamFailed;
     broken_ = broken_ || broken;
@@ -81,23 +100,20 @@ void logLine(ipc::LogLevel level, const std::string& message) {
 }
 
 std::expected<void, std::string> sendFacetEvent(std::string facet, ipc::Bytes payload) {
-  std::lock_guard lock(gActiveMutex);
-  if (gActive == nullptr || !gActive->connected()) {
-    return std::unexpected(std::string("no host is connected (event can be sent once handshake is done)"));
-  }
-  auto sent = gActive->send(ipc::Envelope{0, ipc::FacetEvent{std::move(facet), std::move(payload)}});
-  if (!sent) return std::unexpected(sent.error().message);
-  return {};
+  return sendOnActive(kNotConnectedForEvent, [&](FrameOutput& output) {
+    return output.send(ipc::Envelope{0, ipc::FacetEvent{std::move(facet), std::move(payload)}});
+  });
+}
+
+std::expected<void, std::string> sendFacetEvent(std::string_view facet, const ipc::detail::MessageBuildFn& payload) {
+  return sendOnActive(kNotConnectedForEvent,
+                      [&](FrameOutput& output) { return output.sendFacetEvent(facet, payload); });
 }
 
 std::expected<void, std::string> sendDeviceLost(std::string reason) {
-  std::lock_guard lock(gActiveMutex);
-  if (gActive == nullptr || !gActive->connected()) {
-    return std::unexpected(std::string("no host is connected (host can be told once handshake is done)"));
-  }
-  auto sent = gActive->send(ipc::Envelope{0, ipc::DeviceDetached{gActive->deviceId(), std::move(reason)}});
-  if (!sent) return std::unexpected(sent.error().message);
-  return {};
+  return sendOnActive("no host is connected (host can be told once handshake is done)", [&](FrameOutput& output) {
+    return output.send(ipc::Envelope{0, ipc::DeviceDetached{output.deviceId(), std::move(reason)}});
+  });
 }
 
 }

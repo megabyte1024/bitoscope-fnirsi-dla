@@ -26,6 +26,12 @@ std::array<uint8_t, kFrameHeaderBytes> frameHeader(uint32_t bodyBytes) {
           static_cast<uint8_t>(bodyBytes >> 24)};
 }
 
+Frame::Frame(std::size_t bodyBytes)
+    : storage_(std::make_unique_for_overwrite<uint8_t[]>(kFrameHeaderBytes + bodyBytes)), bodyBytes_(bodyBytes) {
+  const auto header = frameHeader(static_cast<uint32_t>(bodyBytes));
+  std::copy(header.begin(), header.end(), storage_.get());
+}
+
 FrameReader::FrameReader(ByteSource& source, uint32_t maxFrameBytes)
     : source_(source), maxFrameBytes_(maxFrameBytes) {}
 
@@ -91,19 +97,26 @@ std::expected<std::optional<std::vector<uint8_t>>, FrameError> FrameReader::next
 
 FrameWriter::FrameWriter(ByteSink& sink, uint32_t maxFrameBytes) : sink_(sink), maxFrameBytes_(maxFrameBytes) {}
 
-std::expected<void, FrameError> FrameWriter::write(std::span<const uint8_t> message) {
-  if (message.empty()) return std::unexpected(FrameError{FrameErrorKind::empty, "empty message is not frame"});
-  if (message.size() > maxFrameBytes_) {
-    return std::unexpected(FrameError{FrameErrorKind::tooLarge, "message of " + std::to_string(message.size()) +
+std::expected<void, FrameError> FrameWriter::checkSize(std::size_t messageBytes) const {
+  if (messageBytes == 0) return std::unexpected(FrameError{FrameErrorKind::empty, "empty message is not frame"});
+  if (messageBytes > maxFrameBytes_) {
+    return std::unexpected(FrameError{FrameErrorKind::tooLarge, "message of " + std::to_string(messageBytes) +
                                                                     " bytes is over frame limit of " +
                                                                     std::to_string(maxFrameBytes_) + " bytes"});
   }
-  const auto header = frameHeader(static_cast<uint32_t>(message.size()));
-  std::vector<uint8_t> frame;
-  frame.reserve(kFrameHeaderBytes + message.size());
-  frame.insert(frame.end(), header.begin(), header.end());
-  frame.insert(frame.end(), message.begin(), message.end());
-  if (auto wrote = sink_.write(frame); !wrote) {
+  return {};
+}
+
+std::expected<void, FrameError> FrameWriter::write(std::span<const uint8_t> message) {
+  if (auto fits = checkSize(message.size()); !fits) return fits;
+  Frame frame(message.size());
+  std::copy(message.begin(), message.end(), frame.body().begin());
+  return write(frame);
+}
+
+std::expected<void, FrameError> FrameWriter::write(const Frame& frame) {
+  if (auto fits = checkSize(frame.body().size()); !fits) return fits;
+  if (auto wrote = sink_.write(frame.bytes()); !wrote) {
     return std::unexpected(FrameError{FrameErrorKind::streamFailed, "writing stream failed: " + wrote.error()});
   }
   return {};

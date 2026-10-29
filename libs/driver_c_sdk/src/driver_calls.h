@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "bitoscope_driver.h"
+#include "device_location.h"
 #include "device_source.h"
 #include "frame_output.h"
 #include "ipc_messages.h"
@@ -24,22 +25,11 @@ struct bitoscope_progress {
 
 namespace bitoscope::plugin_c_sdk {
 
-class GivenDevice {
+class GivenDevice : public CFoundDevice {
  public:
-  GivenDevice(const SourceDevice& device, const bitoscope_connection& connection);
-  GivenDevice(const GivenDevice&) = delete;
-  GivenDevice& operator=(const GivenDevice&) = delete;
-
-  const bitoscope_found_device& get() const { return device_; }
-
- private:
-  bitoscope_usb_location usb_{};
-  bitoscope_serial_location serial_{};
-  bitoscope_network_location network_{};
-  bitoscope_found_device device_{};
+  GivenDevice(const SourceDevice& device, const bitoscope_connection& connection)
+      : CFoundDevice(device.id, device.location, device.appearanceKey, &connection) {}
 };
-
-std::expected<SourceDevice, std::string> sourceDeviceOf(const bitoscope_found_device& device);
 
 enum class DriverCall { identify, open };
 

@@ -30,12 +30,11 @@ enum class Layout : int {
   channelMajor = BITOSCOPE_CHANNEL_MAJOR,
 };
 
-// IMPLEMENT: The bytes your device sends (bitoscope_device_bytes): write them as they come, and the SDK keeps the
-// capture's channels, in mask order.
+// IMPLEMENT: The bytes your device sends: bitoscope_device_bytes's fields of the same names (bitoscope_driver.h).
 struct DeviceBytes {
   Layout layout = Layout::sampleMajor;
-  uint32_t channelMask = 0;  // IMPLEMENT: the channels the bytes carry, the capture's and any others; 0: every one
-  uint32_t strideBytes = 0;  // IMPLEMENT: from one sample (one round) to the next; 0: as few as the channels take
+  uint32_t channelMask = 0;
+  uint32_t strideBytes = 0;
 };
 
 // IMPLEMENT: What a value measures: only the quantity, never milli or mega.
@@ -111,29 +110,33 @@ struct PropertyValue {
   uint32_t enumIndex = 0;
 };
 
-// IMPLEMENT: Why an applyProperties() refused a request, and which property it is about (empty: the request's
+// IMPLEMENT: Why an applyProperties() or applyDuringCapture() refused a request, and which property it is about (empty: the request's
 // first value).
 struct PropertyRefusal {
   std::string propertyId;
   std::string reason;
 };
 
-// IMPLEMENT: A preset for one channel in the host's waveform view (bitoscope_channel_preset).
+// IMPLEMENT: A preset for one channel in the host's waveform view: bitoscope_channel_preset's fields.
 struct ChannelPreset {
   uint32_t channel = 0;
   std::string name;
-  std::string colorId;  // IMPLEMENT: "color-1" to "color-32"; empty: none
+  std::string colorId;
 };
 
-// IMPLEMENT: What the host asked for (bitoscope_capture).
+// IMPLEMENT: What the host asked for: bitoscope_capture's fields. Read a property's value by its id with integer(),
+// boolean() or enumIndex(); an id your analyzer does not have reads as 0, and the SDK logs an error naming it.
 struct Capture {
   uint64_t sampleRateMilliHz = 0;
   uint32_t channelMask = 0;
-  uint32_t numCapturedChannels = 0;  // IMPLEMENT: the channels in a sample: the bits channelMask has set
-  uint64_t sampleLimit = 0;  // IMPLEMENT: 0: until STOP
+  uint32_t numCapturedChannels = 0;
+  uint64_t sampleLimit = 0;
   bool buffered = false;
-  // IMPLEMENT: The current value of EVERY property of the analyzer, defaults included, by id.
   std::map<std::string, PropertyValue, std::less<>> properties;
+
+  int64_t integer(std::string_view id) const;
+  bool boolean(std::string_view id) const;
+  uint32_t enumIndex(std::string_view id) const;
 };
 
 struct RingFill {
@@ -167,63 +170,53 @@ class Sink {
 
 class UsbDevice;
 
-// IMPLEMENT: How streamUsb() streams your device's bulk IN endpoint into the sink (bitoscope_usb_stream).
+// IMPLEMENT: How streamUsb() streams your device's bulk IN endpoint into the sink: bitoscope_usb_stream's fields of
+// the same names (bitoscope_driver.h), with `user` gone: the functions are std::function's.
 struct UsbStream {
   UsbDevice* device = nullptr;  // IMPLEMENT: required: your device, as UsbDevice::open() gave it
-  uint8_t endpoint = 0;         // IMPLEMENT: required: the bulk IN endpoint, 0x81 say
-  // IMPLEMENT: Optional: called once every transfer is in flight: send your device's start command; an error
-  // fails the capture with it as the reason. Empty: you started your device before the call.
+  uint8_t endpoint = 0;
+  // IMPLEMENT: started and convert: an error fails the capture with it as the reason; stop: an error is logged as
+  // a warning. convert's `samples` has room for exactly the units in `deviceBytes`.
   std::function<std::expected<void, std::string>()> started;
-  // IMPLEMENT: Optional: called once the stream has ended and no transfer is in flight, unless the device is gone:
-  // send your device's stop command; an error is logged as a warning and changes nothing. Empty: nothing is called.
   std::function<std::expected<void, std::string>()> stop;
-  // IMPLEMENT: Optional: endpoint read empty before transfers are queued; only with started. Bytes still arriving
-  // after about 1 s of that fail the capture at sample 0.
   bool drain = false;
-  uint64_t prerollSamples = 0;  // IMPLEMENT: thrown away at the start, rounded up to whole units
-  uint32_t transferBytes = 0;   // IMPLEMENT: a multiple of 1024 up to 16 MiB; 0: about 2 s of data, 16 KiB to 1 MiB
-  uint32_t transfers = 0;       // IMPLEMENT: 2 to 64 in flight; 0: 8
-  // IMPLEMENT: No completion for this long fails as stalled. 0: 3 transfer periods, at least 1 s, none when
-  // buffered; BITOSCOPE_USB_NO_SILENCE_LIMIT: never.
-  uint32_t silenceLimitMs = 0;
-  uint64_t lagLimitBytes = 0;  // IMPLEMENT: delivery this far behind the sample clock fails; 0 or buffered: unchecked
-  // IMPLEMENT: Optional: turns whole units of device bytes (unitBytes each) into the capture's DeviceBytes,
-  // unitSamples samples a unit; `samples` has room for exactly as many units. An error fails the capture with it
-  // as reason.
+  uint64_t prerollSamples = 0;
+  uint32_t transferBytes = 0;
+  uint32_t transfers = 0;
+  uint64_t lagLimitBytes = 0;
   std::function<std::expected<void, std::string>(std::span<const uint8_t> deviceBytes, std::span<uint8_t> samples)>
       convert;
   uint32_t unitBytes = 0;
   uint32_t unitSamples = 0;
-  std::string deviceName;  // IMPLEMENT: names your device in messages; empty: "USB device"
+  std::string deviceName;
 };
 
 void streamUsb(Sink& sink, const UsbStream& stream);
 
-// IMPLEMENT: What a logic analyzer has, as identify describes it (bitoscope_logic_analyzer's fields of the same
-// names): its channels and rates are required, the rest optional.
+// IMPLEMENT: What a logic analyzer has, as identify describes it: bitoscope_logic_analyzer's fields of the same
+// names (bitoscope_driver.h), the functions gone (they are LogicAnalyzer's) and the properties a tree.
 struct LogicAnalyzerInfo {
   uint32_t numChannels = 0;
   std::vector<uint64_t> sampleRatesMilliHz;
-  DeviceBytes deviceBytes;  // IMPLEMENT: every capture's bytes, unless prepare() describes others
+  DeviceBytes deviceBytes;
   std::vector<PropertyNode> properties;
-  // IMPLEMENT: The highest rate for each number of channels: entry i is for i + 1 channels, exactly numChannels
-  // entries, each at least the lowest rate; empty: none.
   std::vector<uint64_t> rateCeilingsMilliHz;
-  uint64_t defaultSampleRateMilliHz = 0;  // IMPLEMENT: the rate a user interface starts with; 0 or unlisted: the first
+  uint64_t defaultSampleRateMilliHz = 0;
   std::vector<ChannelPreset> channelPresets;
-  std::string rateCeilingReason;  // IMPLEMENT: why the ceilings, shown after the SDK's refusal; empty: none
+  std::string rateCeilingReason;
+  uint32_t silenceLimitMs = 0;
+  bool usbStreamProperties = false;
 };
 
 class LogicAnalyzer {
  public:
   virtual ~LogicAnalyzer() = default;
 
-  // IMPLEMENT: Values the host set that take effect at once, on the SDK's main thread: called only WHILE A
-  // CAPTURE RUNS (`capturing` true), with values of properties changeable during a capture. Between
-  // captures the SDK takes the values itself; they reach prepare() and capture() in
-  // Capture::properties. An error refuses the whole request and the previous values stay. The
-  // default takes them.
-  virtual std::expected<void, PropertyRefusal> applyProperties(std::span<const PropertyValue> values, bool capturing);
+  // IMPLEMENT: Values the host set WHILE A CAPTURE RUNS, of properties changeable during a capture, on the SDK's
+  // main thread: they take effect at once (bitoscope_apply_during_capture_fn). Between captures the SDK takes
+  // the values itself; they reach prepare() and capture() in Capture. An error refuses the whole request and
+  // the previous values stay. The default takes them.
+  virtual std::expected<void, PropertyRefusal> applyDuringCapture(std::span<const PropertyValue> values);
 
   // IMPLEMENT: Prepares a START, on the SDK's main thread, after the SDK's own checks and before capture(): an
   // error refuses the START with the error as its reason, and capture() is not called. It may describe
@@ -239,14 +232,15 @@ class LogicAnalyzer {
   virtual std::expected<void, std::string> capture(const Capture& capture, Sink& sink) = 0;
 };
 
-// IMPLEMENT: What the generator offers, as identify describes it; sent to the host in the facet's info.
+// IMPLEMENT: What the generator offers, as identify describes it: bitoscope_signal_generator's fields of the same
+// names (bitoscope_driver.h), the functions gone (they are SignalGenerator's) and the properties a tree.
 struct SignalGeneratorInfo {
-  uint32_t numChannels = 0;  // IMPLEMENT: outputs; output c is bit c of a command's channel mask. At least 1.
-  std::vector<std::string> supportedWaveforms;  // IMPLEMENT: e.g. "square"
-  uint64_t minFrequencyMilliHz = 0;             // IMPLEMENT: advisory bounds, for a user interface
+  uint32_t numChannels = 0;
+  std::vector<std::string> supportedWaveforms;
+  uint64_t minFrequencyMilliHz = 0;
   uint64_t maxFrequencyMilliHz = 0;
-  bool supportsSynchronizedStart = false;  // IMPLEMENT: several outputs start as one atomic operation
-  std::vector<PropertyNode> properties;    // IMPLEMENT: optional: e.g. a group per output
+  bool supportsSynchronizedStart = false;
+  std::vector<PropertyNode> properties;
 };
 
 // IMPLEMENT: A waveform in a command: its name and its parameters exactly as the host sent them (a serialized
@@ -281,15 +275,15 @@ class SignalGenerator {
 };
 
 // IMPLEMENT: The device as identify describes it: the SDK made it with the found device's id. Open may set its name
-// and serial number again; its facets are identify's.
+// and serial number again; its facets are identify's. add() answers the SDK's reason when it refuses a facet.
 class Device {
  public:
   explicit Device(bitoscope_device* device) : device_(device) {}
 
   bool setName(std::string_view name);
   bool setSerialNumber(std::string_view serialNumber);
-  bool add(const LogicAnalyzerInfo& analyzer);
-  bool add(const SignalGeneratorInfo& generator);
+  std::expected<void, std::string> add(const LogicAnalyzerInfo& analyzer);
+  std::expected<void, std::string> add(const SignalGeneratorInfo& generator);
 
   bitoscope_device* get() const { return device_; }
 
@@ -324,35 +318,39 @@ struct Connection {
   std::optional<std::string> serialPort;
 };
 
-// IMPLEMENT: Where a USB device was found (bitoscope_usb_location).
+// IMPLEMENT: Where a USB device was found: bitoscope_usb_location's fields.
 struct UsbLocation {
   uint16_t vendorId = 0;
   uint16_t productId = 0;
-  uint8_t interfaceNumber = 0;  // IMPLEMENT: the interface its UsbId claims
+  uint8_t interfaceNumber = 0;
   uint8_t bus = 0;
-  uint8_t address = 0;          // IMPLEMENT: changes each time the device enumerates
-  std::vector<uint8_t> ports;   // IMPLEMENT: the port path from the root hub: 4, 2 for id "usb-1-4.2"
+  uint8_t address = 0;
+  std::vector<uint8_t> ports;
+  bool operator==(const UsbLocation&) const = default;
 };
 
-// IMPLEMENT: Where a serial device was found (bitoscope_serial_location).
+// IMPLEMENT: Where a serial device was found: bitoscope_serial_location's field.
 struct SerialLocation {
-  std::string port;  // IMPLEMENT: the name you open the port by: "/dev/ttyACM0", "COM3"
+  std::string port;
+  bool operator==(const SerialLocation&) const = default;
 };
 
-// IMPLEMENT: Where a network device was found (bitoscope_network_location).
+// IMPLEMENT: Where a network device was found: bitoscope_network_location's fields.
 struct NetworkLocation {
-  std::string address;  // IMPLEMENT: a host name or an IP address
-  uint16_t port = 0;    // IMPLEMENT: 0: none
+  std::string address;
+  uint16_t port = 0;
+  bool operator==(const NetworkLocation&) const = default;
 };
 
 // IMPLEMENT: Where a device was found, one alternative per transport; std::monostate: no place given.
 using Location = std::variant<std::monostate, UsbLocation, SerialLocation, NetworkLocation>;
 
-// IMPLEMENT: The device an identify, open or held check is about (bitoscope_found_device).
+// IMPLEMENT: The device an identify, open or held check is about: bitoscope_found_device's fields, its place one
+// Location.
 struct FoundDevice {
-  std::string id;  // IMPLEMENT: the user selects the device by it
+  std::string id;
   Location location;
-  std::string appearanceKey;  // IMPLEMENT: changes each time the device appears anew; empty: none given
+  std::string appearanceKey;
   Connection connection;
 
   Transport transport() const;

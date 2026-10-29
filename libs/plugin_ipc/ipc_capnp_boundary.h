@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "ipc_decode_error.h"
+#include "ipc_frame.h"
 
 namespace capnp {
 class MessageBuilder;
@@ -33,5 +35,12 @@ std::optional<DecodeError> readMessage(std::span<const uint8_t> bytes, const Mes
 
 using MessageBuildFn = std::function<void(capnp::MessageBuilder& builder)>;
 std::expected<std::vector<uint8_t>, std::string> buildMessage(const MessageBuildFn& build);
+std::expected<Frame, std::string> buildFrame(const MessageBuildFn& build);
+
+using NestedBuildFn = std::function<void(capnp::MessageBuilder& message, capnp::MessageBuilder& inner)>;
+std::expected<Frame, std::string> buildFrame(const MessageBuildFn& inner, const NestedBuildFn& build);
+
+std::size_t serializedBytes(capnp::MessageBuilder& message);
+void serializeInto(capnp::MessageBuilder& message, std::span<uint8_t> out);
 
 }

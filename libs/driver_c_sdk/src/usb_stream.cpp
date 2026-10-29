@@ -122,13 +122,24 @@ std::expected<Settings, std::string> settingsFor(bitoscope_sink* sink, const Sin
   }
   s.prerollBytes = prerollUnits * s.unitBytes;
   s.bytesPerSecond = streamBytesPerSecond(facts.rateMilliHz, s.unitBytes, s.unitSamples);
-  s.transfers = stream.transfers != 0 ? stream.transfers : kDefaultUsbTransfers;
-  s.transferBytes = stream.transfer_bytes != 0 ? stream.transfer_bytes : defaultTransferBytes(s.bytesPerSecond);
-  if (stream.silence_limit_ms == BITOSCOPE_USB_NO_SILENCE_LIMIT) {
+  uint32_t transfers = stream.transfers;
+  uint64_t transferBytes = stream.transfer_bytes;
+  if (facts.usbChoice) {
+    if (transfers != 0 || transferBytes != 0) {
+      return std::unexpected(
+          std::string("transfers and transfer_bytes come from USB properties (usb_stream_properties): leave them 0"));
+    }
+    transfers = facts.usbChoice->transfers;
+    transferBytes = uint64_t{facts.usbChoice->transferKib} * kUsbTransferGranuleBytes;
+  }
+  s.transfers = transfers != 0 ? transfers : kDefaultUsbTransfers;
+  s.transferBytes = transferBytes != 0 ? static_cast<uint32_t>(transferBytes)
+                                       : defaultTransferBytes(facts.rateMilliHz, s.unitBytes, s.unitSamples);
+  if (facts.buffered || facts.silenceLimitMs == BITOSCOPE_NO_SILENCE_LIMIT) {
     s.silenceLimitMs.reset();
-  } else if (stream.silence_limit_ms != 0) {
-    s.silenceLimitMs = stream.silence_limit_ms;
-  } else if (!facts.buffered) {
+  } else if (facts.silenceLimitMs != 0) {
+    s.silenceLimitMs = facts.silenceLimitMs;
+  } else {
     s.silenceLimitMs = defaultSilenceLimitMs(s.transferBytes, facts.rateMilliHz, s.unitBytes, s.unitSamples);
   }
   s.lagLimitBytes = facts.buffered ? 0 : stream.lag_limit_bytes;
@@ -549,87 +560,73 @@ int failedBeforeStream(bitoscope_sink* sink, const bitoscope_usb_stream& stream,
   return BITOSCOPE_ERROR;
 }
 
-class CppStream {
- public:
-  CppStream(plugin::Sink& sink, const plugin::UsbStream& stream)
-      : sink_(sink),
-        stream_(stream),
-        outUnitBytes_(stream.unitSamples != 0 ? sink.sampleBytes(stream.unitSamples) : 0) {
-    c_.device = stream.device != nullptr ? stream.device->get() : nullptr;
-    c_.endpoint = stream.endpoint;
-    c_.user = this;
-    c_.started = stream.started ? &CppStream::started : nullptr;
-    c_.stop = stream.stop ? &CppStream::stop : nullptr;
-    c_.drain = stream.drain ? 1 : 0;
-    c_.preroll_samples = stream.prerollSamples;
-    c_.transfer_bytes = stream.transferBytes;
-    c_.transfers = stream.transfers;
-    c_.silence_limit_ms = stream.silenceLimitMs;
-    c_.lag_limit_bytes = stream.lagLimitBytes;
-    c_.convert = stream.convert ? &CppStream::convert : nullptr;
-    c_.unit_bytes = stream.unitBytes;
-    c_.unit_samples = stream.unitSamples;
-    c_.device_name = stream.deviceName.empty() ? nullptr : stream.deviceName.c_str();
+}
+
+CppStream::CppStream(plugin::Sink& sink, const plugin::UsbStream& stream)
+    : sink_(sink),
+      stream_(stream),
+      outUnitBytes_(stream.unitSamples != 0 ? sink.sampleBytes(stream.unitSamples) : 0) {
+  c_.device = stream.device != nullptr ? stream.device->get() : nullptr;
+  c_.endpoint = stream.endpoint;
+  c_.user = this;
+  c_.started = stream.started ? &CppStream::started : nullptr;
+  c_.stop = stream.stop ? &CppStream::stop : nullptr;
+  c_.drain = stream.drain ? 1 : 0;
+  c_.preroll_samples = stream.prerollSamples;
+  c_.transfer_bytes = stream.transferBytes;
+  c_.transfers = stream.transfers;
+  c_.lag_limit_bytes = stream.lagLimitBytes;
+  c_.convert = stream.convert ? &CppStream::convert : nullptr;
+  c_.unit_bytes = stream.unitBytes;
+  c_.unit_samples = stream.unitSamples;
+  c_.device_name = stream.deviceName.empty() ? nullptr : stream.deviceName.c_str();
+}
+
+int CppStream::failed(std::string_view reason) {
+  sink_.fail(reason);
+  return BITOSCOPE_ERROR;
+}
+
+std::string CppStream::deviceName() const { return stream_.deviceName.empty() ? "USB device" : stream_.deviceName; }
+
+int CppStream::stop(void* user) {
+  auto* self = static_cast<CppStream*>(user);
+  std::string why;
+  try {
+    auto stopped = self->stream_.stop();
+    if (stopped) return BITOSCOPE_OK;
+    why = stopped.error();
+  } catch (const std::exception& e) {
+    why = std::string("stop threw: ") + e.what();
+  } catch (...) {
+    why = "stop threw";
   }
-  CppStream(const CppStream&) = delete;
-  CppStream& operator=(const CppStream&) = delete;
+  logText(BITOSCOPE_LOG_WARNING, self->deviceName() + " stop failed: " + why);
+  return BITOSCOPE_OK;
+}
 
-  const bitoscope_usb_stream& c() const { return c_; }
-
- private:
-  int failed(std::string_view reason) {
-    sink_.fail(reason);
-    return BITOSCOPE_ERROR;
+template <typename Call>
+int CppStream::guarded(Call&& call, std::string_view what) {
+  try {
+    auto result = call();
+    return result ? BITOSCOPE_OK : failed(result.error());
+  } catch (const std::exception& e) {
+    return failed(std::string(what) + " threw: " + e.what());
+  } catch (...) {
+    return failed(std::string(what) + " threw");
   }
+}
 
-  std::string deviceName() const { return stream_.deviceName.empty() ? "USB device" : stream_.deviceName; }
+int CppStream::started(void* user) {
+  auto* self = static_cast<CppStream*>(user);
+  return self->guarded([self] { return self->stream_.started(); }, "started");
+}
 
-  static int stop(void* user) {
-    auto* self = static_cast<CppStream*>(user);
-    std::string why;
-    try {
-      auto stopped = self->stream_.stop();
-      if (stopped) return BITOSCOPE_OK;
-      why = stopped.error();
-    } catch (const std::exception& e) {
-      why = std::string("stop threw: ") + e.what();
-    } catch (...) {
-      why = "stop threw";
-    }
-    logText(BITOSCOPE_LOG_WARNING, self->deviceName() + " stop failed: " + why);
-    return BITOSCOPE_OK;
-  }
-
-  template <typename Call>
-  int guarded(Call&& call, std::string_view what) {
-    try {
-      auto result = call();
-      return result ? BITOSCOPE_OK : failed(result.error());
-    } catch (const std::exception& e) {
-      return failed(std::string(what) + " threw: " + e.what());
-    } catch (...) {
-      return failed(std::string(what) + " threw");
-    }
-  }
-
-  static int started(void* user) {
-    auto* self = static_cast<CppStream*>(user);
-    return self->guarded([self] { return self->stream_.started(); }, "started");
-  }
-
-  static int convert(void* user, const uint8_t* device, uint64_t units, uint8_t* samples) {
-    auto* self = static_cast<CppStream*>(user);
-    const std::span<const uint8_t> in(device, static_cast<size_t>(units * self->stream_.unitBytes));
-    const std::span<uint8_t> out(samples, static_cast<size_t>(units * self->outUnitBytes_));
-    return self->guarded([self, in, out] { return self->stream_.convert(in, out); }, "convert");
-  }
-
-  plugin::Sink& sink_;
-  const plugin::UsbStream& stream_;
-  uint64_t outUnitBytes_;
-  bitoscope_usb_stream c_{};
-};
-
+int CppStream::convert(void* user, const uint8_t* device, uint64_t units, uint8_t* samples) {
+  auto* self = static_cast<CppStream*>(user);
+  const std::span<const uint8_t> in(device, static_cast<size_t>(units * self->stream_.unitBytes));
+  const std::span<uint8_t> out(samples, static_cast<size_t>(units * self->outUnitBytes_));
+  return self->guarded([self, in, out] { return self->stream_.convert(in, out); }, "convert");
 }
 
 std::string_view transferStatusName(TransferStatus status) {
@@ -659,12 +656,12 @@ uint64_t streamBytesPerSecond(uint64_t rateMilliHz, uint64_t unitBytes, uint64_t
   return saturatingMul(rateMilliHz, unitBytes) / saturatingMul(unitSamples, 1000);
 }
 
-uint32_t defaultTransferBytes(uint64_t bytesPerSecond) {
-  if (bytesPerSecond == 0) return kMaxDefaultTransferBytes;
-  const uint64_t bytes = saturatingMul(bytesPerSecond, kDefaultTransferFillMs) / 1000;
-  const uint64_t granules = ceilDiv(bytes, kUsbTransferGranuleBytes);
-  const uint64_t rounded = saturatingMul(granules, kUsbTransferGranuleBytes);
-  return static_cast<uint32_t>(std::clamp<uint64_t>(rounded, kMinDefaultTransferBytes, kMaxDefaultTransferBytes));
+uint32_t defaultTransferBytes(uint64_t rateMilliHz, uint64_t unitBytes, uint64_t unitSamples) {
+  if (rateMilliHz == 0 || unitSamples == 0) return kMaxDefaultTransferBytes;
+  const uint64_t bytes = ceilDiv(saturatingMul(saturatingMul(rateMilliHz, unitBytes), kDefaultTransferFillMs),
+                                 saturatingMul(unitSamples, 1'000'000));
+  const uint64_t rounded = saturatingMul(ceilDiv(bytes, kUsbTransferGranuleBytes), kUsbTransferGranuleBytes);
+  return static_cast<uint32_t>(std::clamp<uint64_t>(rounded, kUsbTransferGranuleBytes, kMaxDefaultTransferBytes));
 }
 
 uint64_t defaultSilenceLimitMs(uint64_t transferBytes, uint64_t rateMilliHz, uint64_t unitBytes, uint64_t unitSamples) {
@@ -681,6 +678,7 @@ int runUsbStream(bitoscope_sink* sink, const bitoscope_usb_stream& stream, UsbSt
     const auto settings = settingsFor(sink, sinkStreamFacts(*sink), stream);
     if (!settings) return failedBeforeStream(sink, stream, settings.error());
     UsbStreamRun run(sink, *settings, transport);
+    const SilenceWatchedByStream watched(*sink);
     const int answer = run.run();
     if (answer != BITOSCOPE_DEVICE_GONE) stopDevice(stream);
     return answer;

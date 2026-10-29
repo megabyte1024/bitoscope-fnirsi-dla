@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "device_properties.h"
+#include "frame_output.h"
 
 namespace bitoscope::plugin_c_sdk {
 
@@ -132,6 +133,24 @@ std::expected<void, std::string> addProperty(std::vector<props::PropertyNode>& t
   if (auto checked = model::checkTree(candidate); !checked) return checked;
   tree = std::move(candidate);
   return {};
+}
+
+std::expected<std::vector<props::PropertyNode>, std::string> propertyTreeOf(const bitoscope_property* properties,
+                                                                           size_t count) {
+  std::vector<props::PropertyNode> tree;
+  if (count == 0) return tree;
+  if (properties == nullptr) return std::unexpected(std::to_string(count) + " properties, but properties is NULL");
+  for (size_t i = 0; i < count; ++i) {
+    const std::string where = "property \"" + text(properties[i].id) + "\": ";
+    auto placed = propertyFrom(properties[i]);
+    if (!placed) return std::unexpected(where + placed.error());
+    if (auto added = addProperty(tree, std::move(*placed)); !added) return std::unexpected(where + added.error());
+  }
+  return tree;
+}
+
+void logMissingProperty(std::string_view id) {
+  logLine(ipc::LogLevel::error, "logic analyzer has no property \"" + std::string(id) + "\"");
 }
 
 std::vector<bitoscope_property_value> cValues(std::span<const props::PropertyValue> values) {
