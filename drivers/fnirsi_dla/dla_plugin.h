@@ -18,7 +18,7 @@
 
 namespace fnirsi {
 
-inline constexpr std::string_view kDlaDriverVersion = "0.1.0";
+inline constexpr std::string_view kDlaDriverVersion = "0.2.0";
 
 struct OpenedDla {
   std::shared_ptr<SampleStreamDevice> device;
