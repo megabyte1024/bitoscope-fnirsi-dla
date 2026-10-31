@@ -9,7 +9,7 @@
 #include <utility>
 #include <variant>
 
-#include "driver_plugin.h"
+#include "generic_facet.h"
 #include "ipc_decode_error.h"
 #include "ipc_signal_generator.h"
 

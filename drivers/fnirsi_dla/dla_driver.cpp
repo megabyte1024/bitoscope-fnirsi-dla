@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "dla_plugin.h"
+#include "dla_driver.h"
 
 #include <thread>
 #include <utility>
@@ -34,12 +34,12 @@ plugin::LogicAnalyzer* DlaSession::logicAnalyzer() { return &analyzer_; }
 
 plugin::SignalGenerator* DlaSession::signalGenerator() { return &generator_; }
 
-DlaPlugin::DlaPlugin(DlaUsb& usb, std::chrono::milliseconds open_retry_delay, OpenRetrySleep sleep)
+DlaDriver::DlaDriver(DlaUsb& usb, std::chrono::milliseconds open_retry_delay, OpenRetrySleep sleep)
     : usb_(usb),
       open_retry_delay_(open_retry_delay),
       sleep_(sleep ? std::move(sleep) : OpenRetrySleep(&sleepFor)) {}
 
-plugin::DriverDescription DlaPlugin::description() {
+plugin::DriverDescription DlaDriver::description() {
   plugin::DriverDescription description;
   description.displayName = std::string(kDlaFamilyName);
   description.version = std::string(kDlaDriverVersion);
@@ -54,7 +54,7 @@ plugin::DriverDescription DlaPlugin::description() {
   return description;
 }
 
-std::expected<void, plugin::DeviceFailure> DlaPlugin::identify(const plugin::FoundDevice& unit,
+std::expected<void, plugin::DeviceFailure> DlaDriver::identify(const plugin::FoundDevice& unit,
                                                                plugin::Device& device) {
   auto device_name = usb_.readDeviceName(unit);
   if (!device_name) return std::unexpected(std::move(device_name.error()));
@@ -68,7 +68,7 @@ std::expected<void, plugin::DeviceFailure> DlaPlugin::identify(const plugin::Fou
   return {};
 }
 
-std::expected<std::unique_ptr<plugin::Session>, plugin::DeviceFailure> DlaPlugin::open(const plugin::FoundDevice& unit) {
+std::expected<std::unique_ptr<plugin::Session>, plugin::DeviceFailure> DlaDriver::open(const plugin::FoundDevice& unit) {
   auto opened = usb_.open(unit);
   // WHY: Retry other failures only: SDK retries busy itself, and missing permission never comes back by waiting.
   if (!opened && opened.error().problem == plugin::DeviceProblem::other) {

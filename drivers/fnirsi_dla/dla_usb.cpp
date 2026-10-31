@@ -6,7 +6,7 @@
 #include <string>
 #include <utility>
 
-#include "dla_plugin.h"
+#include "dla_driver.h"
 #include "fnirsi_device.h"
 
 namespace fnirsi {

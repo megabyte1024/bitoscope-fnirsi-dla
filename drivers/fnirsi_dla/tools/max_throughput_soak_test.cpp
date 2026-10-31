@@ -36,7 +36,7 @@ namespace tools = fnirsi::tools;
 using Clock = std::chrono::steady_clock;
 
 constexpr auto kCommandTimeout = std::chrono::seconds(15);
-constexpr auto kPluginStartTimeout = std::chrono::seconds(30);
+constexpr auto kDriverStartTimeout = std::chrono::seconds(30);
 constexpr auto kStallThreshold = std::chrono::seconds(3);
 // WHY: First-chunk timeout must exceed one transfer's fill: seconds at 1 MHz for a large --usb-transfer-kib.
 constexpr auto kFirstChunkTimeout = std::chrono::seconds(10);
@@ -256,24 +256,24 @@ int run(int argc, char** argv) {
   };
 
   tools::DlaSessionOptions session_options;
-  session_options.plugin_dir = options.plugin_dir ? std::filesystem::path(*options.plugin_dir)
-                                                  : std::filesystem::path(BITOSCOPE_DEFAULT_PLUGIN_DIR);
-  session_options.device_id = options.plugin_id.value_or("");
-  session_options.start_timeout = kPluginStartTimeout;
+  session_options.driver_dir = options.driver_dir ? std::filesystem::path(*options.driver_dir)
+                                                  : std::filesystem::path(BITOSCOPE_DEFAULT_DRIVER_DIR);
+  session_options.device_id = options.driver_device_id.value_or("");
+  session_options.start_timeout = kDriverStartTimeout;
   session_options.request_timeout = kCommandTimeout;
   std::printf("Starting %s from %s on %s...\n", std::string(tools::kDlaDriver).c_str(),
-              session_options.plugin_dir.string().c_str(),
-              options.plugin_id ? ("DLA '" + *options.plugin_id + "'").c_str() : "connected DLA");
+              session_options.driver_dir.string().c_str(),
+              options.driver_device_id ? ("DLA '" + *options.driver_device_id + "'").c_str() : "connected DLA");
   auto session = tools::DlaSession::open(session_options);
   if (!session) return finishWith(session.error());
   auto& la = (*session)->la();
   auto& siggen = (*session)->siggen();
-  const std::string& plugin_id = (*session)->pluginId();
+  const std::string& driver_device_id = (*session)->driverDeviceId();
   if (!la.capabilities().bulk_ring) {
-    return finishWith("driver '" + plugin_id +
+    return finishWith("driver '" + driver_device_id +
                       "' does not write bulk ring, only way samples travel");
   }
-  std::printf("Opened '%s' (%s); its la.acquisition writes bulk ring.\n", plugin_id.c_str(),
+  std::printf("Opened '%s' (%s); its la.acquisition writes bulk ring.\n", driver_device_id.c_str(),
               (*session)->deviceName().c_str());
 
   if (options.usb_transfer_kib) {

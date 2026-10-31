@@ -32,13 +32,13 @@ endfunction()
 
 get_property(BITOSCOPE_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(BITOSCOPE_MULTI_CONFIG)
-  set(BITOSCOPE_PLUGIN_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+  set(BITOSCOPE_DRIVER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 else()
-  set(BITOSCOPE_PLUGIN_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin")
+  set(BITOSCOPE_DRIVER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin")
 endif()
 
-function(bitoscope_plugin_executable target)
-  set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${BITOSCOPE_PLUGIN_OUTPUT_DIR}")
+function(bitoscope_driver_executable target)
+  set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${BITOSCOPE_DRIVER_OUTPUT_DIR}")
 endfunction()
 
 if(BITOSCOPE_PRIVATE_TREE)

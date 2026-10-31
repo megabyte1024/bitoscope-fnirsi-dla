@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr auto kPluginStartTimeout = std::chrono::seconds(30);
+constexpr auto kDriverStartTimeout = std::chrono::seconds(30);
 constexpr auto kCommandTimeout = std::chrono::seconds(15);
 constexpr auto kSampleTimeout = std::chrono::seconds(20);
 constexpr double kFrequencyTolerance = 0.05;
@@ -85,20 +85,20 @@ using fnirsi::tools::extractChannelBits;
 }
 
 int main() {
-  const std::filesystem::path plugin_dir = BITOSCOPE_DEFAULT_PLUGIN_DIR;
+  const std::filesystem::path driver_dir = BITOSCOPE_DEFAULT_DRIVER_DIR;
   std::printf("Starting %s from %s on connected DLA (timeout %llds)...\n",
-              std::string(fnirsi::tools::kDlaDriver).c_str(), plugin_dir.string().c_str(),
-              static_cast<long long>(kPluginStartTimeout.count()));
+              std::string(fnirsi::tools::kDlaDriver).c_str(), driver_dir.string().c_str(),
+              static_cast<long long>(kDriverStartTimeout.count()));
   fnirsi::tools::DlaSessionOptions options;
-  options.plugin_dir = plugin_dir;
-  options.start_timeout = kPluginStartTimeout;
+  options.driver_dir = driver_dir;
+  options.start_timeout = kDriverStartTimeout;
   options.request_timeout = kCommandTimeout;
   auto session = fnirsi::tools::DlaSession::open(options);
   if (!session) {
     std::fprintf(stderr, "FAIL: %s\n", session.error().c_str());
     return 1;
   }
-  std::printf("Found driver '%s'\n", (*session)->pluginId().c_str());
+  std::printf("Found driver '%s'\n", (*session)->driverDeviceId().c_str());
   auto& la = (*session)->la();
   auto& siggen = (*session)->siggen();
 

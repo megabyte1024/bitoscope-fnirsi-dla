@@ -11,7 +11,7 @@ add_library(bitoscope_driver_c_sdk STATIC
     src/device_watch.cpp
     src/driver_calls.cpp
     src/driver_description.cpp
-    src/driver_plugin.cpp
+    src/generic_facet.cpp
     src/driver_source.cpp
     src/facet_properties.cpp
     src/identity_cache.cpp

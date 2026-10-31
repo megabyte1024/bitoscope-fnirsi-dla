@@ -16,8 +16,8 @@
 
 #include "ipc_properties.h"
 #include "la_pipe_client.h"
-#include "pipe_plugin_host.h"
-#include "plugin_device.h"
+#include "pipe_driver_host.h"
+#include "driver_device.h"
 #include "siggen_pipe_client.h"
 
 namespace fnirsi::tools {
@@ -25,7 +25,7 @@ namespace fnirsi::tools {
 inline constexpr std::string_view kDlaDriver = "fnirsi_dla";
 
 struct DlaSessionOptions {
-  std::filesystem::path plugin_dir;
+  std::filesystem::path driver_dir;
   std::string device_id;
   std::chrono::milliseconds start_timeout{30'000};
   std::chrono::milliseconds request_timeout{15'000};
@@ -39,7 +39,7 @@ class DlaSession {
   DlaSession(const DlaSession&) = delete;
   DlaSession& operator=(const DlaSession&) = delete;
 
-  const std::string& pluginId() const { return device_.plugin_id; }
+  const std::string& driverDeviceId() const { return device_.driver_device_id; }
   const std::string& deviceName() const { return device_.device.name; }
 
   bitoscope::host::pipe::LaAcquisitionClient& la() { return *la_; }
@@ -54,8 +54,8 @@ class DlaSession {
   DlaSession() = default;
 
   std::shared_ptr<std::atomic<bool>> closing_ = std::make_shared<std::atomic<bool>>(false);
-  std::unique_ptr<bitoscope::host::PipePluginHost> host_;
-  bitoscope::host::pipe::PluginDevice device_;
+  std::unique_ptr<bitoscope::host::PipeDriverHost> host_;
+  bitoscope::host::pipe::DriverDevice device_;
   std::optional<bitoscope::host::pipe::LaAcquisitionClient> la_;
   std::optional<bitoscope::host::pipe::SiggenClient> siggen_;
 };

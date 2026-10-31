@@ -10,8 +10,8 @@
 
 namespace bitoscope::host::pipe {
 
-struct PluginDevice {
-  std::string plugin_id;
+struct DriverDevice {
+  std::string driver_device_id;
   ipc::DeviceInfo device;
 };
 

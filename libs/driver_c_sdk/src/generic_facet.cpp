@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "driver_plugin.h"
+#include "generic_facet.h"
 
 #include <exception>
 #include <utility>

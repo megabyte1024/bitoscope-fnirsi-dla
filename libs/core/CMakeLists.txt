@@ -2,7 +2,7 @@
 
 add_library(bitoscope_plugin_host STATIC
     device_watcher.cpp
-    pipe_plugin_host.cpp
+    pipe_driver_host.cpp
     plugin_connection.cpp
     plugin_process.cpp
 )

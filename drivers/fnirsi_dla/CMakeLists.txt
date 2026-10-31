@@ -35,7 +35,7 @@ target_link_libraries(fnirsi_usb PUBLIC fnirsi_protocol fnirsi_connect_sequence 
 target_compile_features(fnirsi_usb PUBLIC cxx_std_23)
 bitoscope_enable_warnings(fnirsi_usb)
 
-add_library(fnirsi_dla_facets STATIC dla_analyzer.cpp dla_signal_generator.cpp dla_plugin.cpp)
+add_library(fnirsi_dla_facets STATIC dla_analyzer.cpp dla_signal_generator.cpp dla_driver.cpp)
 target_include_directories(fnirsi_dla_facets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fnirsi_dla_facets
     PUBLIC bitoscope_driver_c_sdk fnirsi_protocol fnirsi_transfer_fill_time
@@ -50,7 +50,7 @@ bitoscope_enable_warnings(fnirsi_dla_usb)
 
 add_executable(fnirsi_dla main.cpp)
 target_link_libraries(fnirsi_dla PRIVATE fnirsi_dla_usb)
-bitoscope_plugin_executable(fnirsi_dla)
+bitoscope_driver_executable(fnirsi_dla)
 target_compile_features(fnirsi_dla PRIVATE cxx_std_23)
 bitoscope_enable_warnings(fnirsi_dla)
 
@@ -63,7 +63,7 @@ bitoscope_enable_warnings(fnirsi_pwm_check)
 add_library(fnirsi_dla_tool_session STATIC tools/dla_session.cpp tools/ring_reader.cpp)
 target_include_directories(fnirsi_dla_tool_session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 target_link_libraries(fnirsi_dla_tool_session PUBLIC
-    bitoscope_cli_plugins
+    bitoscope_cli_drivers
     bitoscope_bulk_ring
     fnirsi_pwm_check
 )
@@ -77,7 +77,7 @@ target_link_libraries(fnirsi_dla_loopback_check PRIVATE
 )
 add_dependencies(fnirsi_dla_loopback_check fnirsi_dla)
 target_compile_definitions(fnirsi_dla_loopback_check PRIVATE
-    BITOSCOPE_DEFAULT_PLUGIN_DIR="$<TARGET_FILE_DIR:fnirsi_dla>"
+    BITOSCOPE_DEFAULT_DRIVER_DIR="$<TARGET_FILE_DIR:fnirsi_dla>"
 )
 target_compile_features(fnirsi_dla_loopback_check PRIVATE cxx_std_23)
 bitoscope_enable_warnings(fnirsi_dla_loopback_check)
@@ -92,7 +92,7 @@ target_link_libraries(fnirsi_dla_max_throughput_soak_test PRIVATE
 )
 add_dependencies(fnirsi_dla_max_throughput_soak_test fnirsi_dla)
 target_compile_definitions(fnirsi_dla_max_throughput_soak_test PRIVATE
-    BITOSCOPE_DEFAULT_PLUGIN_DIR="$<TARGET_FILE_DIR:fnirsi_dla>"
+    BITOSCOPE_DEFAULT_DRIVER_DIR="$<TARGET_FILE_DIR:fnirsi_dla>"
 )
 target_compile_features(fnirsi_dla_max_throughput_soak_test PRIVATE cxx_std_23)
 bitoscope_enable_warnings(fnirsi_dla_max_throughput_soak_test)

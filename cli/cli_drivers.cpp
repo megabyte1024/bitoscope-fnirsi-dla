@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "cli_plugins.h"
+#include "cli_drivers.h"
 
 #include "display_text.h"
 
@@ -195,7 +195,7 @@ std::string rateCeilingLines(const std::vector<uint64_t>& ceilings, const std::s
 
 }
 
-std::filesystem::path defaultPluginDirectory(const std::filesystem::path& executable) {
+std::filesystem::path defaultDriverDirectory(const std::filesystem::path& executable) {
   return executable.parent_path() / "drivers";
 }
 
@@ -221,9 +221,9 @@ std::filesystem::path currentExecutable(std::string_view argv0) {
 #endif
 }
 
-std::filesystem::path pluginDirectory(std::string_view plugin_dir, const std::filesystem::path& executable) {
-  if (!plugin_dir.empty()) return std::filesystem::path(std::u8string(plugin_dir.begin(), plugin_dir.end()));
-  return defaultPluginDirectory(executable);
+std::filesystem::path driverDirectory(std::string_view driver_dir, const std::filesystem::path& executable) {
+  if (!driver_dir.empty()) return std::filesystem::path(std::u8string(driver_dir.begin(), driver_dir.end()));
+  return defaultDriverDirectory(executable);
 }
 
 std::expected<std::string, std::string> selectDriver(const std::vector<std::string>& drivers,
@@ -332,7 +332,7 @@ std::string describeListedDevice(std::string_view driver, const ipc::DeviceInfo&
   return std::string(driver) + "/" + device.id + " now listed as " + listedEntry(device);
 }
 
-std::string describeOpenProgress(std::string_view pluginId, const ipc::OpenProgress& progress) {
+std::string describeOpenProgress(std::string_view driverDeviceId, const ipc::OpenProgress& progress) {
   std::string words;
   switch (progress.code) {
     case ipc::OpenProgressCode::firmwareLoading:
@@ -349,7 +349,7 @@ std::string describeOpenProgress(std::string_view pluginId, const ipc::OpenProgr
   } else if (!progress.detail.empty()) {
     words += " (" + progress.detail + ")";
   }
-  return std::string(pluginId) + " opening: " + words;
+  return std::string(driverDeviceId) + " opening: " + words;
 }
 
 std::string describeDeviceProperties(std::string_view driver, const ipc::DeviceInfo& device) {
@@ -383,8 +383,8 @@ std::string describeDeviceProperties(std::string_view driver, const ipc::DeviceI
   return text;
 }
 
-std::string formatLogLine(std::string_view plugin_id, const ipc::LogEvent& event) {
-  std::string line = "[" + std::string(plugin_id) + "]";
+std::string formatLogLine(std::string_view driver_device_id, const ipc::LogEvent& event) {
+  std::string line = "[" + std::string(driver_device_id) + "]";
   if (!event.source.empty()) line += "[" + event.source + "]";
   return line + "[" + levelName(event.level) + "] " + event.message;
 }
@@ -426,10 +426,10 @@ std::string describeCaptureEnd(const ipc::la::CaptureEnded& ended) {
   return "ended (reason " + std::to_string(static_cast<unsigned>(ended.reason)) + "): " + ended.message;
 }
 
-std::expected<host::pipe::PluginDevice, std::string> openDevice(host::PipePluginHost& host, std::string_view plugin,
+std::expected<host::pipe::DriverDevice, std::string> openDevice(host::PipeDriverHost& host, std::string_view driver_name,
                                                                 std::string_view device,
                                                                 const std::filesystem::path& directory) {
-  auto driver = selectDriver(host.drivers(), plugin, directory);
+  auto driver = selectDriver(host.drivers(), driver_name, directory);
   if (!driver) return std::unexpected(driver.error());
   auto list = host.listDevices(*driver);
   if (!list) return std::unexpected("could not list devices of driver \"" + *driver + "\": " + list.error());
@@ -444,7 +444,7 @@ std::expected<host::pipe::PluginDevice, std::string> openDevice(host::PipePlugin
   if (!connection) return std::unexpected("driver \"" + *id + "\" was opened but is gone");
   auto handshake = connection->device();
   if (!handshake) return std::unexpected("driver \"" + *id + "\" made no handshake");
-  return host::pipe::PluginDevice{*id, std::move(*handshake)};
+  return host::pipe::DriverDevice{*id, std::move(*handshake)};
 }
 
 }

@@ -18,16 +18,16 @@
 
 #include "ipc_la_acquisition.h"
 #include "ipc_messages.h"
-#include "pipe_plugin_host.h"
-#include "plugin_device.h"
+#include "pipe_driver_host.h"
+#include "driver_device.h"
 
 namespace bitoscope::cli {
 
-std::filesystem::path defaultPluginDirectory(const std::filesystem::path& executable);
+std::filesystem::path defaultDriverDirectory(const std::filesystem::path& executable);
 
 std::filesystem::path currentExecutable(std::string_view argv0);
 
-std::filesystem::path pluginDirectory(std::string_view plugin_dir, const std::filesystem::path& executable);
+std::filesystem::path driverDirectory(std::string_view driver_dir, const std::filesystem::path& executable);
 
 std::expected<std::string, std::string> selectDriver(const std::vector<std::string>& drivers,
                                                      std::string_view requested,
@@ -42,11 +42,11 @@ std::string describeDevices(std::string_view driver, const ipc::DeviceList& list
 
 std::string describeListedDevice(std::string_view driver, const ipc::DeviceInfo& device);
 
-std::string describeOpenProgress(std::string_view pluginId, const ipc::OpenProgress& progress);
+std::string describeOpenProgress(std::string_view driverDeviceId, const ipc::OpenProgress& progress);
 
 std::string describeDeviceProperties(std::string_view driver, const ipc::DeviceInfo& device);
 
-std::string formatLogLine(std::string_view plugin_id, const ipc::LogEvent& event);
+std::string formatLogLine(std::string_view driver_device_id, const ipc::LogEvent& event);
 bool isErrorLog(const ipc::LogEvent& event);
 
 class CaptureEvents {
@@ -63,7 +63,7 @@ class CaptureEvents {
 
 std::string describeCaptureEnd(const ipc::la::CaptureEnded& ended);
 
-std::expected<host::pipe::PluginDevice, std::string> openDevice(host::PipePluginHost& host, std::string_view plugin,
+std::expected<host::pipe::DriverDevice, std::string> openDevice(host::PipeDriverHost& host, std::string_view driver_name,
                                                                 std::string_view device,
                                                                 const std::filesystem::path& directory);
 

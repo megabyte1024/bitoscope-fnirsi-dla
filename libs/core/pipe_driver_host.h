@@ -32,25 +32,25 @@ std::expected<ipc::DeviceList, std::string> listDevices(const std::filesystem::p
                                                         std::string name = {},
                                                         const DriverConnection& connection = {});
 
-struct PipePluginHostOptions {
-  std::filesystem::path pluginDirectory;
+struct PipeDriverHostOptions {
+  std::filesystem::path driverDirectory;
   StderrLineFn onStderrLine;
-  std::function<void(std::string_view pluginId, const ipc::LogEvent&)> onLog;
-  std::function<void(std::string_view pluginId, const ipc::FacetEvent&)> onFacetEvent;
-  std::function<void(std::string_view pluginId, std::string_view reason)> onClosed;
-  std::function<void(std::string_view pluginId, std::string_view notice)> onNotice;
-  std::function<void(std::string_view pluginId, std::string_view reason)> onDeviceLost;
-  std::function<void(std::string_view pluginId, const ipc::OpenProgress&)> onOpenProgress;
+  std::function<void(std::string_view driverDeviceId, const ipc::LogEvent&)> onLog;
+  std::function<void(std::string_view driverDeviceId, const ipc::FacetEvent&)> onFacetEvent;
+  std::function<void(std::string_view driverDeviceId, std::string_view reason)> onClosed;
+  std::function<void(std::string_view driverDeviceId, std::string_view notice)> onNotice;
+  std::function<void(std::string_view driverDeviceId, std::string_view reason)> onDeviceLost;
+  std::function<void(std::string_view driverDeviceId, const ipc::OpenProgress&)> onOpenProgress;
   std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout;
   std::chrono::milliseconds startTimeout{0};
 };
 
-class PipePluginHost final : public FacetTransport {
+class PipeDriverHost final : public FacetTransport {
  public:
-  explicit PipePluginHost(PipePluginHostOptions options);
-  ~PipePluginHost() override;
-  PipePluginHost(const PipePluginHost&) = delete;
-  PipePluginHost& operator=(const PipePluginHost&) = delete;
+  explicit PipeDriverHost(PipeDriverHostOptions options);
+  ~PipeDriverHost() override;
+  PipeDriverHost(const PipeDriverHost&) = delete;
+  PipeDriverHost& operator=(const PipeDriverHost&) = delete;
 
   std::vector<std::string> drivers() const;
 
@@ -64,23 +64,23 @@ class PipePluginHost final : public FacetTransport {
                                                 HandshakeOffer offer = {},
                                                const DriverConnection& connection = {});
 
-  bool close(std::string_view pluginId);
+  bool close(std::string_view driverDeviceId);
 
-  std::shared_ptr<PluginConnection> connection(std::string_view pluginId) const;
+  std::shared_ptr<PluginConnection> connection(std::string_view driverDeviceId) const;
 
-  std::expected<std::string, std::string> sendCommand(std::string_view pluginId, std::string_view facet,
+  std::expected<std::string, std::string> sendCommand(std::string_view driverDeviceId, std::string_view facet,
                                                       std::string_view payload) override;
-  std::expected<void, PropertiesRefusal> setProperties(std::string_view pluginId, std::string_view facet,
+  std::expected<void, PropertiesRefusal> setProperties(std::string_view driverDeviceId, std::string_view facet,
                                                        std::span<const ipc::props::PropertyValue> values) override;
 
  private:
   std::expected<std::filesystem::path, std::string> executableOf(std::string_view driver) const;
   std::chrono::milliseconds startTimeout() const;
 
-  PipePluginHostOptions options_;
+  PipeDriverHostOptions options_;
   std::mutex openMutex_;
   mutable std::mutex mutex_;
-  std::map<std::string, std::shared_ptr<PluginConnection>, std::less<>> plugins_;
+  std::map<std::string, std::shared_ptr<PluginConnection>, std::less<>> connections_;
 };
 
 }

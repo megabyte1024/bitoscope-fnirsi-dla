@@ -57,9 +57,9 @@ class DlaSession final : public bitoscope::plugin::Session {
   DlaSignalGenerator generator_;
 };
 
-class DlaPlugin {
+class DlaDriver {
  public:
-  explicit DlaPlugin(DlaUsb& usb, std::chrono::milliseconds open_retry_delay = kOpenRetryDelay,
+  explicit DlaDriver(DlaUsb& usb, std::chrono::milliseconds open_retry_delay = kOpenRetryDelay,
                      OpenRetrySleep sleep = nullptr);
 
   bitoscope::plugin::DriverDescription description();

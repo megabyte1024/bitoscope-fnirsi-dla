@@ -149,7 +149,7 @@ void DeviceWatcher::readLoop() {
   ipc::FrameReader reader(link_->fromPlugin());
   const std::string& who = link_->name();
   std::optional<WatchEnd> ended;
-  bool toldByPlugin = false;
+  bool toldByDriver = false;
   for (;;) {
     auto frame = reader.next();
     if (!frame) {
@@ -158,7 +158,7 @@ void DeviceWatcher::readLoop() {
       break;
     }
     if (!frame->has_value()) {
-      const std::string cause = "plugin " + exitText(*link_);
+      const std::string cause = "driver " + exitText(*link_);
       ended = WatchEnd{who + ": device watch ended: " + cause, cause};
       break;
     }
@@ -196,7 +196,7 @@ void DeviceWatcher::readLoop() {
     } else if (const auto* failed = std::get_if<ipc::WatchFailed>(&envelope->body)) {
       const std::string cause = failed->reason.empty() ? std::string("driver gave no reason") : failed->reason;
       ended = WatchEnd{who + ": device watch stopped: " + cause, cause};
-      toldByPlugin = true;
+      toldByDriver = true;
       break;
     }
   }
@@ -206,7 +206,7 @@ void DeviceWatcher::readLoop() {
     report = !stopping_;
   }
   if (!report) return;
-  link_->shutdown(toldByPlugin ? kStopGrace : std::chrono::milliseconds(0));
+  link_->shutdown(toldByDriver ? kStopGrace : std::chrono::milliseconds(0));
   if (events_.onEnded) events_.onEnded(*ended);
 }
 

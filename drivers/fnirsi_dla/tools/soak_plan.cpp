@@ -265,10 +265,10 @@ std::expected<SoakOptions, std::string> parseSoakArgs(std::span<const std::strin
       o.check_threads = static_cast<uint32_t>(*t);
     } else if (arg == "--driver") {
       if (value.empty()) return std::unexpected("--driver needs device id, e.g. usb-1-15");
-      o.plugin_id = std::string(value);
+      o.driver_device_id = std::string(value);
     } else if (arg == "--driver-dir") {
       if (value.empty()) return std::unexpected("--driver-dir needs directory");
-      o.plugin_dir = std::string(value);
+      o.driver_dir = std::string(value);
     } else if (arg == "--edge-tolerance") {
       auto t = numberIn(arg, value, 0, kMaxTolerance);
       if (!t) return std::unexpected(t.error());

@@ -56,8 +56,8 @@ struct SoakOptions {
   std::optional<uint32_t> usb_transfer_kib;
   uint64_t ring_mib = 256;
   std::array<PortSignal, kRigPorts> ports = kDefaultRig;
-  std::optional<std::string> plugin_id;
-  std::optional<std::string> plugin_dir;
+  std::optional<std::string> driver_device_id;
+  std::optional<std::string> driver_dir;
   std::array<std::optional<std::pair<uint64_t, uint64_t>>, kRigPorts> period;
   uint32_t check_threads = 0;
   uint32_t edge_tolerance = 1;

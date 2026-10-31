@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "pipe_plugin_host.h"
+#include "pipe_driver_host.h"
 
 #include <condition_variable>
 #include <thread>
@@ -93,42 +93,42 @@ std::expected<ipc::DeviceList, std::string> listDevices(const std::filesystem::p
   return result;
 }
 
-PipePluginHost::PipePluginHost(PipePluginHostOptions options) : options_(std::move(options)) {}
+PipeDriverHost::PipeDriverHost(PipeDriverHostOptions options) : options_(std::move(options)) {}
 
-std::chrono::milliseconds PipePluginHost::startTimeout() const {
+std::chrono::milliseconds PipeDriverHost::startTimeout() const {
   return options_.startTimeout.count() > 0 ? options_.startTimeout : options_.requestTimeout;
 }
 
-PipePluginHost::~PipePluginHost() {
-  std::map<std::string, std::shared_ptr<PluginConnection>, std::less<>> plugins;
+PipeDriverHost::~PipeDriverHost() {
+  std::map<std::string, std::shared_ptr<PluginConnection>, std::less<>> connections;
   {
     std::lock_guard lock(mutex_);
-    plugins.swap(plugins_);
+    connections.swap(connections_);
   }
-  for (auto& [id, connection] : plugins) connection->close();
+  for (auto& [id, connection] : connections) connection->close();
 }
 
-std::vector<std::string> PipePluginHost::drivers() const {
+std::vector<std::string> PipeDriverHost::drivers() const {
   std::vector<std::string> out;
-  for (const auto& path : listPluginExecutables(options_.pluginDirectory)) out.push_back(pathText(path.stem()));
+  for (const auto& path : listPluginExecutables(options_.driverDirectory)) out.push_back(pathText(path.stem()));
   return out;
 }
 
-std::expected<std::filesystem::path, std::string> PipePluginHost::executableOf(std::string_view driver) const {
-  for (const auto& path : listPluginExecutables(options_.pluginDirectory)) {
+std::expected<std::filesystem::path, std::string> PipeDriverHost::executableOf(std::string_view driver) const {
+  for (const auto& path : listPluginExecutables(options_.driverDirectory)) {
     if (pathText(path.stem()) == driver) return path;
   }
-  return std::unexpected("no driver \"" + std::string(driver) + "\" in " + pathText(options_.pluginDirectory));
+  return std::unexpected("no driver \"" + std::string(driver) + "\" in " + pathText(options_.driverDirectory));
 }
 
-std::expected<ipc::DeviceList, std::string> PipePluginHost::listDevices(std::string_view driver,
+std::expected<ipc::DeviceList, std::string> PipeDriverHost::listDevices(std::string_view driver,
                                                                           const DriverConnection& connection) const {
   auto executable = executableOf(driver);
   if (!executable) return std::unexpected(executable.error());
   return host::listDevices(*executable, options_.onStderrLine, startTimeout(), std::string(driver), connection);
 }
 
-std::expected<std::unique_ptr<DeviceWatcher>, std::string> PipePluginHost::watch(
+std::expected<std::unique_ptr<DeviceWatcher>, std::string> PipeDriverHost::watch(
     std::string_view driver, DeviceWatcherEvents events, const DriverConnection& connection) const {
   auto executable = executableOf(driver);
   if (!executable) return std::unexpected(executable.error());
@@ -136,7 +136,7 @@ std::expected<std::unique_ptr<DeviceWatcher>, std::string> PipePluginHost::watch
                               startTimeout(), connection);
 }
 
-std::expected<std::string, OpenRefusal> PipePluginHost::open(std::string_view driver, std::string_view deviceId,
+std::expected<std::string, OpenRefusal> PipeDriverHost::open(std::string_view driver, std::string_view deviceId,
                                                               HandshakeOffer offer,
                                                               const DriverConnection& connection) {
   std::lock_guard opening(openMutex_);
@@ -144,10 +144,10 @@ std::expected<std::string, OpenRefusal> PipePluginHost::open(std::string_view dr
   std::shared_ptr<PluginConnection> dead;
   {
     std::lock_guard lock(mutex_);
-    if (auto it = plugins_.find(id); it != plugins_.end()) {
+    if (auto it = connections_.find(id); it != connections_.end()) {
       if (!it->second->closedReason()) return id;
       dead = std::move(it->second);
-      plugins_.erase(it);
+      connections_.erase(it);
     }
   }
   dead.reset();
@@ -169,46 +169,46 @@ std::expected<std::string, OpenRefusal> PipePluginHost::open(std::string_view dr
   if (options_.onOpenProgress) {
     events.onOpenProgress = [f = options_.onOpenProgress, id](const ipc::OpenProgress& p) { f(id, p); };
   }
-  auto pluginConnection = std::make_shared<PluginConnection>(std::move(*process), std::move(events));
+  auto driverConnection = std::make_shared<PluginConnection>(std::move(*process), std::move(events));
 
-  auto reply = pluginConnection->handshake(offer, startTimeout());
+  auto reply = driverConnection->handshake(offer, startTimeout());
   if (!reply) return std::unexpected(OpenRefusal{reply.error().message, reply.error().unavailable});
   std::lock_guard lock(mutex_);
-  plugins_[id] = std::move(pluginConnection);
+  connections_[id] = std::move(driverConnection);
   return id;
 }
 
-bool PipePluginHost::close(std::string_view pluginId) {
+bool PipeDriverHost::close(std::string_view driverDeviceId) {
   // WHY: One open() at a time, and never a close() inside one: an open() of the same device waits.
   std::lock_guard opening(openMutex_);
   std::shared_ptr<PluginConnection> connection;
   {
     std::lock_guard lock(mutex_);
-    const auto it = plugins_.find(pluginId);
-    if (it == plugins_.end()) return false;
+    const auto it = connections_.find(driverDeviceId);
+    if (it == connections_.end()) return false;
     connection = std::move(it->second);
-    plugins_.erase(it);
+    connections_.erase(it);
   }
   const bool wasOpen = !connection->closedReason().has_value();
   connection->close();  // WHY: Outside mutex_: close() waits for the driver's reader thread.
   return wasOpen;
 }
 
-std::shared_ptr<PluginConnection> PipePluginHost::connection(std::string_view pluginId) const {
+std::shared_ptr<PluginConnection> PipeDriverHost::connection(std::string_view driverDeviceId) const {
   std::lock_guard lock(mutex_);
-  auto it = plugins_.find(pluginId);
-  return it == plugins_.end() ? nullptr : it->second;
+  auto it = connections_.find(driverDeviceId);
+  return it == connections_.end() ? nullptr : it->second;
 }
 
-std::expected<std::string, std::string> PipePluginHost::sendCommand(std::string_view pluginId, std::string_view facet,
+std::expected<std::string, std::string> PipeDriverHost::sendCommand(std::string_view driverDeviceId, std::string_view facet,
                                                                     std::string_view payload) {
-  const auto plugin = connection(pluginId);
-  if (plugin == nullptr) {
-    return std::unexpected(std::string(kTransportErrorPrefix) + "no driver \"" + std::string(pluginId) +
+  const auto driver = connection(driverDeviceId);
+  if (driver == nullptr) {
+    return std::unexpected(std::string(kTransportErrorPrefix) + "no driver \"" + std::string(driverDeviceId) +
                            "\" was opened by this host");
   }
   const auto bytes = std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
-  auto reply = plugin->command(facet, bytes, options_.requestTimeout);
+  auto reply = driver->command(facet, bytes, options_.requestTimeout);
   if (!reply) {
     const RequestError& error = reply.error();
     if (error.kind == RequestFailure::Rejected || error.kind == RequestFailure::Refused) {
@@ -219,14 +219,14 @@ std::expected<std::string, std::string> PipePluginHost::sendCommand(std::string_
   return std::string(reply->begin(), reply->end());
 }
 
-std::expected<void, PropertiesRefusal> PipePluginHost::setProperties(std::string_view pluginId, std::string_view facet,
+std::expected<void, PropertiesRefusal> PipeDriverHost::setProperties(std::string_view driverDeviceId, std::string_view facet,
                                                                      std::span<const ipc::props::PropertyValue> values) {
-  const auto plugin = connection(pluginId);
-  if (plugin == nullptr) {
+  const auto driver = connection(driverDeviceId);
+  if (driver == nullptr) {
     return std::unexpected(PropertiesRefusal{
-        std::string(kTransportErrorPrefix) + "no driver \"" + std::string(pluginId) + "\" was opened by this host", {}});
+        std::string(kTransportErrorPrefix) + "no driver \"" + std::string(driverDeviceId) + "\" was opened by this host", {}});
   }
-  auto result = plugin->setProperties(facet, std::vector<ipc::props::PropertyValue>(values.begin(), values.end()),
+  auto result = driver->setProperties(facet, std::vector<ipc::props::PropertyValue>(values.begin(), values.end()),
                                       options_.requestTimeout);
   if (!result) {
     const RequestError& error = result.error();

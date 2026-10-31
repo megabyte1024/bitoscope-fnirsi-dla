@@ -17,7 +17,7 @@
 #include "driver_calls.h"
 #include "driver_description.h"
 #include "driver_model.h"
-#include "driver_plugin.h"
+#include "generic_facet.h"
 #include "facet_properties.h"
 #include "frame_output.h"
 #include "ipc_la_acquisition.h"

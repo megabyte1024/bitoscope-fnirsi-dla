@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <utility>
 
-#include "cli_plugins.h"
+#include "cli_drivers.h"
 #include "ipc_messages.h"
 
 namespace fnirsi::tools {
@@ -34,23 +34,23 @@ const ipc::FacetInfo* findFacet(const ipc::DeviceInfo& device, std::string_view 
 std::expected<std::unique_ptr<DlaSession>, std::string> DlaSession::open(const DlaSessionOptions& options) {
   std::unique_ptr<DlaSession> session(new DlaSession());
 
-  host::PipePluginHostOptions host_options;
-  host_options.pluginDirectory = options.plugin_dir;
+  host::PipeDriverHostOptions host_options;
+  host_options.driverDirectory = options.driver_dir;
   host_options.requestTimeout = options.request_timeout;
   host_options.startTimeout = options.start_timeout;
   host_options.onStderrLine = [](std::string_view line) { printErrLine(line); };
-  host_options.onLog = [](std::string_view plugin_id, const ipc::LogEvent& event) {
-    printErrLine(bitoscope::cli::formatLogLine(plugin_id, event));
+  host_options.onLog = [](std::string_view driver_device_id, const ipc::LogEvent& event) {
+    printErrLine(bitoscope::cli::formatLogLine(driver_device_id, event));
   };
-  host_options.onClosed = [closing = session->closing_](std::string_view plugin_id, std::string_view reason) {
-    if (!closing->load()) printErrLine("driver '" + std::string(plugin_id) + "' ended: " + std::string(reason));
+  host_options.onClosed = [closing = session->closing_](std::string_view driver_device_id, std::string_view reason) {
+    if (!closing->load()) printErrLine("driver '" + std::string(driver_device_id) + "' ended: " + std::string(reason));
   };
-  session->host_ = std::make_unique<host::PipePluginHost>(std::move(host_options));
+  session->host_ = std::make_unique<host::PipeDriverHost>(std::move(host_options));
 
-  auto device = bitoscope::cli::openDevice(*session->host_, kDlaDriver, options.device_id, options.plugin_dir);
+  auto device = bitoscope::cli::openDevice(*session->host_, kDlaDriver, options.device_id, options.driver_dir);
   if (!device) return std::unexpected(device.error());
   session->device_ = std::move(*device);
-  const std::string& id = session->device_.plugin_id;
+  const std::string& id = session->device_.driver_device_id;
 
   const ipc::FacetInfo* la = findFacet(session->device_.device, host::pipe::kLaAcquisitionFacetName);
   const ipc::FacetInfo* siggen = findFacet(session->device_.device, host::pipe::kSiggenFacetName);
@@ -85,7 +85,7 @@ DlaSession::~DlaSession() {
 
 std::expected<void, std::string> DlaSession::setProperties(std::string_view facet,
                                                               std::span<const ipc::props::PropertyValue> values) {
-  auto set = host_->setProperties(device_.plugin_id, facet, values);
+  auto set = host_->setProperties(device_.driver_device_id, facet, values);
   if (set) return {};
   return std::unexpected(set.error().message +
                          (set.error().property.empty() ? std::string() : " (property " + set.error().property + ")"));
@@ -93,7 +93,7 @@ std::expected<void, std::string> DlaSession::setProperties(std::string_view face
 
 std::optional<std::string> DlaSession::closedReason() const {
   if (!host_) return std::string("driver is not open");
-  const auto connection = host_->connection(device_.plugin_id);
+  const auto connection = host_->connection(device_.driver_device_id);
   if (!connection) return std::string("driver is not open");
   return connection->closedReason();
 }

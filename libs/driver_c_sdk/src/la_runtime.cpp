@@ -24,7 +24,7 @@
 #include "device_properties.h"
 #include "device_bytes.h"
 #include "display_text.h"
-#include "driver_plugin.h"
+#include "generic_facet.h"
 #include "facet_properties.h"
 #include "frame_output.h"
 #include "sink_facts.h"
