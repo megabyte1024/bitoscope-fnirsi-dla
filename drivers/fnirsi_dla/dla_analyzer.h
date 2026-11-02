@@ -45,6 +45,8 @@ class DlaAnalyzer final : public bitoscope::plugin::LogicAnalyzer {
   std::array<uint8_t, kSimpleTriggerSize> simple_trigger_{};
   bitoscope::plugin::UsbStream stream_;
   std::string started_line_;
+  bool commands_answered_ = false;
+  bool stop_answered_ = false;
 };
 
 }

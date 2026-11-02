@@ -163,6 +163,8 @@ class LibusbDeviceSystem final : public UsbDeviceSystem {
     return call;
   }
 
+  UsbCall clearHalt(uint8_t endpoint) override { return usbCallOf(libusb_clear_halt(handle_, endpoint)); }
+
   void* libusbContext() override { return context_; }
   void* libusbHandle() override { return handle_; }
 

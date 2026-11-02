@@ -144,6 +144,49 @@ std::expected<std::vector<ipc::la::ChannelPreset>, std::string> channelPresets(c
 
 }
 
+int sdk::addOwnFacet(bitoscope_device* device, const bitoscope_facet& f, bool commandRequired, OwnFacetMaker maker,
+                     bitoscope_reply* reply) {
+  try {
+    if (device == nullptr) return BITOSCOPE_ERROR;
+    const std::string where = "bitoscope_add_facet (device \"" + device->id + "\"): ";
+    if (device->facetsFixed) return refused(reply, where + kFacetsAreIdentifys);
+    if (empty(f.name)) return refused(reply, where + "facet needs name");
+    if (commandRequired && f.command == nullptr) {
+      return refused(reply, where + "facet \"" + f.name + "\" has no command function");
+    }
+    const uint32_t major = f.version_major == 0 ? 1 : f.version_major;
+    if (hasFacet(*device, f.name, major, f.protocol_major)) {
+      return refused(reply, where + "facet \"" + f.name + "\" major " + std::to_string(major) +
+                     (f.protocol_major != 0 ? " for protocol major " + std::to_string(f.protocol_major) : std::string()) +
+                     " is registered already");
+    }
+    if (f.num_capabilities > 0 && f.capabilities == nullptr) return refused(reply, where + "capabilities missing");
+    if (f.info_size > 0 && f.info == nullptr) return refused(reply, where + "info missing");
+    sdk::FacetRegistration registration;
+    registration.name = f.name;
+    registration.major = major;
+    registration.minor = f.version_minor;
+    registration.protocolMajor = f.protocol_major;
+    for (size_t i = 0; i < f.num_capabilities; ++i) {
+      if (empty(f.capabilities[i])) return refused(reply, where + "capability needs name");
+      registration.capabilities.emplace_back(f.capabilities[i]);
+    }
+    auto tree = sdk::propertyTreeOf(f.properties, f.num_properties);
+    if (!tree) return refused(reply, where + tree.error());
+    const auto* info = static_cast<const uint8_t*>(f.info);
+    registration.info.assign(info, info + f.info_size);
+    registration.makeHandler = [name = registration.name, maker = std::move(maker),
+                                device](const std::vector<ipc::props::PropertyValue>&) {
+      return maker(name, device->session);
+    };
+    keepTree(*device, registration.name, std::move(*tree));
+    device->facets.push_back(std::move(registration));
+    return BITOSCOPE_OK;
+  } catch (...) {
+    return BITOSCOPE_ERROR;
+  }
+}
+
 extern "C" {
 
 int bitoscope_run_driver_sized(int argc, char** argv, const bitoscope_driver* driver, size_t driver_size) {
@@ -354,45 +397,21 @@ int bitoscope_add_facet_sized(bitoscope_device* device, const bitoscope_facet* f
   try {
     if (device == nullptr || facet == nullptr) return BITOSCOPE_ERROR;
     const bitoscope_facet f = copiedFromPossiblyShorterStruct(facet, facet_size);
-    const std::string where = "bitoscope_add_facet (device \"" + device->id + "\"): ";
-    if (device->facetsFixed) return refused(reply, where + kFacetsAreIdentifys);
-    if (empty(f.name)) return refused(reply, where + "facet needs name");
-    if (f.command == nullptr) return refused(reply, where + "facet \"" + f.name + "\" has no command function");
-    const uint32_t major = f.version_major == 0 ? 1 : f.version_major;
-    if (hasFacet(*device, f.name, major, f.protocol_major)) {
-      return refused(reply, where + "facet \"" + f.name + "\" major " + std::to_string(major) +
-                     (f.protocol_major != 0 ? " for protocol major " + std::to_string(f.protocol_major) : std::string()) +
-                     " is registered already");
-    }
-    if (f.num_capabilities > 0 && f.capabilities == nullptr) return refused(reply, where + "capabilities missing");
-    if (f.info_size > 0 && f.info == nullptr) return refused(reply, where + "info missing");
-    sdk::FacetRegistration registration;
-    registration.name = f.name;
-    registration.major = major;
-    registration.minor = f.version_minor;
-    registration.protocolMajor = f.protocol_major;
-    for (size_t i = 0; i < f.num_capabilities; ++i) {
-      if (empty(f.capabilities[i])) return refused(reply, where + "capability needs name");
-      registration.capabilities.emplace_back(f.capabilities[i]);
-    }
-    auto tree = sdk::propertyTreeOf(f.properties, f.num_properties);
-    if (!tree) return refused(reply, where + tree.error());
-    const auto* info = static_cast<const uint8_t*>(f.info);
-    registration.info.assign(info, info + f.info_size);
-    registration.makeHandler = [name = registration.name,
-                                generic = sdk::GenericRegistration{f.command, nullptr, f.apply_properties},
-                                device](const std::vector<ipc::props::PropertyValue>&) {
-      sdk::GenericRegistration session = generic;
-      session.session = device->session;
-      return sdk::makeGenericFacet(name, session);
-    };
-    keepTree(*device, registration.name, std::move(*tree));
-    device->facets.push_back(std::move(registration));
-    return BITOSCOPE_OK;
+    const sdk::GenericRegistration generic{f.command, nullptr, f.apply_properties};
+    constexpr bool commandRequired = true;
+    return sdk::addOwnFacet(
+        device, f, commandRequired,
+        [generic](const std::string& name, void* session) {
+          sdk::GenericRegistration registration = generic;
+          registration.session = session;
+          return sdk::makeGenericFacet(name, registration);
+        },
+        reply);
   } catch (...) {
     return BITOSCOPE_ERROR;
   }
 }
+
 
 int bitoscope_reply_payload(bitoscope_reply* reply, const void* payload, size_t payload_size) {
   try {

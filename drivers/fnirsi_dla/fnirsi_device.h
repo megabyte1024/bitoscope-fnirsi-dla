@@ -9,11 +9,13 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "bitoscope_driver_cpp.h"
 #include "command_link.h"
 #include "connect_sequence.h"
+#include "dla_model.h"
 #include "fnirsi_protocol.h"
 #include "sample_stream_device.h"
 
@@ -34,12 +36,14 @@ class FnirsiDevice final : public SampleStreamDevice {
 
   [[nodiscard]] std::expected<void, bitoscope::plugin::DeviceFailure> openAt(const bitoscope::plugin::FoundDevice& unit);
 
-  [[nodiscard]] std::expected<std::string, bitoscope::plugin::DeviceFailure> readDeviceNameAt(
+  [[nodiscard]] std::expected<DlaIdentity, bitoscope::plugin::DeviceFailure> readIdentityAt(
       const bitoscope::plugin::FoundDevice& unit);
 
   void close();
+  [[nodiscard]] bitoscope::plugin::UsbDevice handOverUsb();
 
   bool isOpen() const { return usb_.isOpen(); }
+  bool inBootloader() const { return in_bootloader_; }
   const ConnectInfo& connectInfo() const { return info_; }
   bitoscope::plugin::UsbDevice& usb() { return usb_; }
 
@@ -56,11 +60,13 @@ class FnirsiDevice final : public SampleStreamDevice {
   [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> sendDirect(
       DirectCommand cmd, std::span<const uint8_t> payload, bool read_reply);
 
+  static void logLinkNote(std::string_view note);
+
   class UsbTransport final : public BulkTransport {
    public:
     explicit UsbTransport(bitoscope::plugin::UsbDevice& usb) : usb_(usb) {}
-    std::expected<size_t, std::string> bulkTransfer(uint8_t endpoint, std::span<uint8_t> data,
-                                                    unsigned timeout_ms) override;
+    std::expected<size_t, TransferFailure> bulkTransfer(uint8_t endpoint, std::span<uint8_t> data,
+                                                        unsigned timeout_ms) override;
 
    private:
     bitoscope::plugin::UsbDevice& usb_;
@@ -68,9 +74,10 @@ class FnirsiDevice final : public SampleStreamDevice {
 
   bitoscope::plugin::UsbDevice usb_;
   ConnectInfo info_{};
+  bool in_bootloader_ = false;
   // WHY: transport_ refers to usb_, so it must be declared after it.
   UsbTransport transport_{usb_};
-  CommandLink link_{transport_};
+  CommandLink link_{transport_, &FnirsiDevice::logLinkNote};
 };
 
 }

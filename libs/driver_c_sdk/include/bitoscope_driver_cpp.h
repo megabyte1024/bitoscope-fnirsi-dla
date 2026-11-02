@@ -274,6 +274,26 @@ class SignalGenerator {
   virtual std::expected<void, PropertyRefusal> applyProperties(std::span<const PropertyValue> values, bool capturing);
 };
 
+// IMPLEMENT: A facet of your own, as identify describes it: bitoscope_facet's fields of the same names
+// (bitoscope_driver.h), the command function gone: Session::command() answers its commands.
+struct FacetInfo {
+  std::string name;  // IMPLEMENT: e.g. "vendor.power_supply"
+  uint32_t versionMajor = 1;
+  uint32_t versionMinor = 0;
+  std::vector<std::string> capabilities;
+  std::vector<uint8_t> info;  // IMPLEMENT: a description in your facet's own format, sent to the host as is
+};
+
+// IMPLEMENT: What Session::command() answers: ok false fails the command with the message; the payload is in your
+// facet's own format.
+struct CommandAnswer {
+  bool ok = true;
+  std::string message;
+  std::vector<uint8_t> payload;
+};
+
+std::expected<void, std::string> sendEvent(std::string_view facet, std::span<const uint8_t> payload);
+
 // IMPLEMENT: The device as identify describes it: the SDK made it with the found device's id. Open may set its name
 // and serial number again; its facets are identify's. add() answers the SDK's reason when it refuses a facet.
 class Device {
@@ -284,6 +304,7 @@ class Device {
   bool setSerialNumber(std::string_view serialNumber);
   std::expected<void, std::string> add(const LogicAnalyzerInfo& analyzer);
   std::expected<void, std::string> add(const SignalGeneratorInfo& generator);
+  std::expected<void, std::string> add(const FacetInfo& facet);
 
   bitoscope_device* get() const { return device_; }
 
@@ -300,6 +321,11 @@ class Session {
 
   virtual LogicAnalyzer* logicAnalyzer();
   virtual SignalGenerator* signalGenerator();
+
+  // IMPLEMENT: Answers a command to one of your own facets (FacetInfo), on the SDK's main thread: `facet` names it,
+  // `payload` is the command as the host sent it. An error refuses the command as unknown, with the error as the
+  // reason. The default refuses every command.
+  virtual std::expected<CommandAnswer, std::string> command(std::string_view facet, std::span<const uint8_t> payload);
 };
 
 // IMPLEMENT: The transport a device connects through (bitoscope_transport): what DriverDescription declares,
@@ -420,6 +446,7 @@ class UsbDevice {
   std::expected<size_t, UsbError> bulkOut(uint8_t endpoint, std::span<const uint8_t> data, uint32_t timeoutMs);
   std::expected<size_t, UsbError> bulkIn(uint8_t endpoint, std::span<uint8_t> data, uint32_t timeoutMs);
   std::expected<size_t, UsbError> control(const UsbSetup& setup, std::span<uint8_t> data, uint32_t timeoutMs);
+  std::expected<void, UsbError> clearHalt(uint8_t endpoint);
   void* libusbContext() const;
   void* libusbHandle() const;
 

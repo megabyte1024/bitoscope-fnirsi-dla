@@ -23,10 +23,19 @@ bool isInEndpoint(uint8_t endpoint) {
 
 FnirsiDevice::~FnirsiDevice() { close(); }
 
-std::expected<size_t, std::string> FnirsiDevice::UsbTransport::bulkTransfer(uint8_t endpoint, std::span<uint8_t> data,
-                                                                            unsigned timeout_ms) {
+void FnirsiDevice::logLinkNote(std::string_view note) {
+  bitoscope_log(BITOSCOPE_LOG_WARNING, "%.*s", static_cast<int>(note.size()), note.data());
+}
+
+std::expected<size_t, TransferFailure> FnirsiDevice::UsbTransport::bulkTransfer(uint8_t endpoint,
+                                                                                std::span<uint8_t> data,
+                                                                                unsigned timeout_ms) {
   auto moved = isInEndpoint(endpoint) ? usb_.bulkIn(endpoint, data, timeout_ms) : usb_.bulkOut(endpoint, data, timeout_ms);
-  if (!moved) return std::unexpected(std::move(moved.error().text));
+  if (!moved) {
+    plugin::UsbError& error = moved.error();
+    return std::unexpected(
+        TransferFailure{std::move(error.text), error.status == BITOSCOPE_USB_TIMEOUT, error.transferred});
+  }
   return *moved;
 }
 
@@ -37,7 +46,7 @@ std::expected<void, plugin::DeviceFailure> FnirsiDevice::openAt(const plugin::Fo
   return connectOpened();
 }
 
-std::expected<std::string, plugin::DeviceFailure> FnirsiDevice::readDeviceNameAt(const plugin::FoundDevice& unit) {
+std::expected<DlaIdentity, plugin::DeviceFailure> FnirsiDevice::readIdentityAt(const plugin::FoundDevice& unit) {
   auto opened = plugin::UsbDevice::open(unit);
   if (!opened) return std::unexpected(std::move(opened.error()));
   usb_ = std::move(*opened);
@@ -46,7 +55,7 @@ std::expected<std::string, plugin::DeviceFailure> FnirsiDevice::readDeviceNameAt
   // WHY: Leave without the Exit farewell: asking the model name must not change what the device is doing.
   closeWith({});
   if (!info) return std::unexpected(otherFailure(info.error()));
-  return info->device_data.device_name;
+  return DlaIdentity{!info->mcu_version.application_running, info->device_data.device_name};
 }
 
 std::expected<ConnectInfo, std::string> FnirsiDevice::identify() {
@@ -63,8 +72,8 @@ std::expected<ConnectInfo, std::string> FnirsiDevice::identify() {
   if (!mcu.has_value()) {
     return std::unexpected("malformed GetMCUVersion reply");
   }
-  if (!mcu->application_mode) {
-    return std::unexpected("device is in bootloader mode, not application mode");
+  if (!mcu->application_running) {
+    return ConnectInfo{*mcu, DeviceData{}};
   }
 
   auto device_data_reply = sendDirect(DirectCommand::kGetDeviceData, {}, readReply);
@@ -80,6 +89,7 @@ std::expected<ConnectInfo, std::string> FnirsiDevice::identify() {
 
 std::expected<void, plugin::DeviceFailure> FnirsiDevice::connectOpened() {
   link_.reopen();
+  in_bootloader_ = false;
 
   const plugin::UsbSpeed speed = usb_.speed();
   if (speed != plugin::UsbSpeed::super && speed != plugin::UsbSpeed::superPlus) {
@@ -94,11 +104,11 @@ std::expected<void, plugin::DeviceFailure> FnirsiDevice::connectOpened() {
     close();
     return std::unexpected(otherFailure(info.error()));
   }
-  if (!info->device_data.fpga_healthy) {
-    close();
-    return std::unexpected(otherFailure("device reports FPGA state is not healthy"));
-  }
   info_ = *info;
+  if (!info_.mcu_version.application_running) {
+    in_bootloader_ = true;
+    return {};
+  }
 
   for (const HousekeepingStep& step : connectHousekeeping()) {
     if (std::holds_alternative<FramedCommand>(step.cmd)) {
@@ -117,7 +127,19 @@ std::expected<void, plugin::DeviceFailure> FnirsiDevice::connectOpened() {
   return {};
 }
 
-void FnirsiDevice::close() { closeWith(closeFarewell()); }
+void FnirsiDevice::close() {
+  if (in_bootloader_) {
+    closeWith({});
+    return;
+  }
+  closeWith(closeFarewell());
+}
+
+bitoscope::plugin::UsbDevice FnirsiDevice::handOverUsb() {
+  bitoscope::plugin::UsbDevice handed;
+  if (usb_.isOpen()) link_.shutdown({}, [this, &handed] { handed = std::move(usb_); });
+  return handed;
+}
 
 void FnirsiDevice::closeWith(std::span<const Farewell> farewell) {
   if (usb_.isOpen()) link_.shutdown(farewell, [this] { usb_.close(); });

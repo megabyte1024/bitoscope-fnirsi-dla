@@ -15,6 +15,8 @@
 #include "device_location.h"
 #include "driver_model.h"
 #include "facet_properties.h"
+#include "frame_output.h"
+#include "generic_facet.h"
 #include "ipc_signal_generator.h"
 #include "plugin_model.h"
 
@@ -91,6 +93,14 @@ std::expected<void, PropertyRefusal> SignalGenerator::applyProperties(std::span<
 LogicAnalyzer* Session::logicAnalyzer() { return nullptr; }
 SignalGenerator* Session::signalGenerator() { return nullptr; }
 
+std::expected<CommandAnswer, std::string> Session::command(std::string_view, std::span<const uint8_t>) {
+  return std::unexpected(std::string("session answers no commands of its own facets"));
+}
+
+std::expected<void, std::string> sendEvent(std::string_view facet, std::span<const uint8_t> payload) {
+  return plugin_c_sdk::sendFacetEvent(std::string(facet), ipc::Bytes(payload.begin(), payload.end()));
+}
+
 bool Device::setName(std::string_view name) {
   return bitoscope_set_name(device_, std::string(name).c_str()) == BITOSCOPE_OK;
 }
@@ -128,6 +138,55 @@ std::expected<void, std::string> Device::add(const SignalGeneratorInfo& generato
   }
   bitoscope_reply reply;
   return refusalOf(bitoscope_add_signal_generator(device_, &twin.get(), &reply), reply);
+}
+
+namespace {
+
+class SessionFacet final : public plugin_c_sdk::FacetHandler {
+ public:
+  SessionFacet(std::string name, Session* session) : name_(std::move(name)), session_(session) {}
+
+  plugin_c_sdk::FacetAnswer handle(std::span<const uint8_t> payload) override {
+    if (session_ == nullptr) return ipc::Refusal{"facet \"" + name_ + "\" has no session", 0};
+    try {
+      auto answer = session_->command(name_, payload);
+      if (!answer) return ipc::Refusal{"facet \"" + name_ + "\" does not know this command: " + answer.error(), 0};
+      return ipc::FacetReply{answer->ok, std::move(answer->message),
+                             ipc::Bytes(answer->payload.begin(), answer->payload.end())};
+    } catch (const std::exception& e) {
+      return ipc::FacetReply{false, std::string("facet's command function threw: ") + e.what(), {}};
+    } catch (...) {
+      return ipc::FacetReply{false, "facet's command function threw", {}};
+    }
+  }
+
+ private:
+  std::string name_;
+  Session* session_;
+};
+
+}
+
+std::expected<void, std::string> Device::add(const FacetInfo& facet) {
+  std::vector<const char*> capabilities;
+  for (const std::string& capability : facet.capabilities) capabilities.push_back(capability.c_str());
+  bitoscope_facet f{};
+  f.name = facet.name.c_str();
+  f.version_major = facet.versionMajor;
+  f.version_minor = facet.versionMinor;
+  f.capabilities = capabilities.empty() ? nullptr : capabilities.data();
+  f.num_capabilities = capabilities.size();
+  f.info = facet.info.empty() ? nullptr : facet.info.data();
+  f.info_size = facet.info.size();
+  constexpr bool commandRequired = false;
+  bitoscope_reply reply;
+  const int status = plugin_c_sdk::addOwnFacet(
+      device_, f, commandRequired,
+      [](const std::string& name, void* session) -> std::unique_ptr<plugin_c_sdk::FacetHandler> {
+        return std::make_unique<SessionFacet>(name, static_cast<Session*>(session));
+      },
+      &reply);
+  return refusalOf(status, reply);
 }
 
 namespace {

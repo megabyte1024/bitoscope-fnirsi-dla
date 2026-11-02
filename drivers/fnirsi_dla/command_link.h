@@ -8,11 +8,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -20,12 +22,18 @@
 
 namespace fnirsi {
 
+struct TransferFailure {
+  std::string text;
+  bool timed_out = false;
+  size_t transferred = 0;
+};
+
 class BulkTransport {
  public:
   virtual ~BulkTransport() = default;
 
-  virtual std::expected<size_t, std::string> bulkTransfer(uint8_t endpoint, std::span<uint8_t> data,
-                                                          unsigned timeout_ms) = 0;
+  virtual std::expected<size_t, TransferFailure> bulkTransfer(uint8_t endpoint, std::span<uint8_t> data,
+                                                              unsigned timeout_ms) = 0;
 };
 
 struct Farewell {
@@ -35,7 +43,10 @@ struct Farewell {
 
 class CommandLink {
  public:
-  explicit CommandLink(BulkTransport& transport) : transport_(transport) {}
+  static constexpr int kQueryWriteAttempts = 6;
+
+  explicit CommandLink(BulkTransport& transport, std::function<void(std::string_view)> note = {})
+      : transport_(transport), note_(std::move(note)) {}
 
   CommandLink(const CommandLink&) = delete;
   CommandLink& operator=(const CommandLink&) = delete;
@@ -62,8 +73,24 @@ class CommandLink {
       return std::unexpected(std::move(*refused));
     }
     auto buf = buildDirectCommand(cmd, payload);
-    if (auto written = transport_.bulkTransfer(kEndpointCommandOut, buf, 1000); !written) {
-      return std::unexpected("command write failed: " + written.error());
+    const int attempts = changesNoState(cmd) ? kQueryWriteAttempts : 1;
+    for (int attempt = 1;; ++attempt) {
+      const auto written = transport_.bulkTransfer(kEndpointCommandOut, buf, 1000);
+      if (written) {
+        break;
+      }
+      const TransferFailure& failure = written.error();
+      if (attempts == 1 || !failure.timed_out || failure.transferred != 0) {
+        return std::unexpected("command write failed: " + failure.text);
+      }
+      if (attempt >= attempts) {
+        return std::unexpected(
+            std::format("command write failed: {} ({} writes, none taken)", failure.text, attempts));
+      }
+      if (note_) {
+        note_(std::format("command 0a {:02x} write not taken ({}), sending it again: write {} of {}",
+                          static_cast<unsigned>(cmd), failure.text, attempt + 1, attempts));
+      }
     }
     if (!read_reply) {
       return std::vector<uint8_t>{};
@@ -71,7 +98,7 @@ class CommandLink {
     std::vector<uint8_t> reply(kDirectCommandSize, 0);
     const auto read = transport_.bulkTransfer(kEndpointCommandIn, reply, 1000);
     if (!read) {
-      return std::unexpected("command reply read failed: " + read.error());
+      return std::unexpected("command reply read failed: " + read.error().text);
     }
     reply.resize(*read);
     return reply;
@@ -107,6 +134,11 @@ class CommandLink {
   static constexpr const char* kClosingMessage =
       "command link is shutting down (shutdown is pending)";
 
+  static constexpr bool changesNoState(DirectCommand cmd) {
+    return cmd == DirectCommand::kFlush || cmd == DirectCommand::kGetMcuVersion ||
+           cmd == DirectCommand::kGetDeviceData;
+  }
+
   std::optional<std::string> refusal() const {
     switch (state_.load()) {
       case State::Open:
@@ -123,12 +155,13 @@ class CommandLink {
                                                      std::span<const uint8_t> payload) {
     auto buf = buildFramedCommand(cmd, payload);
     if (auto written = transport_.bulkTransfer(kEndpointCommandOut, buf, 2000); !written) {
-      return std::unexpected("framed command write failed: " + written.error());
+      return std::unexpected("framed command write failed: " + written.error().text);
     }
     return {};
   }
 
   BulkTransport& transport_;
+  std::function<void(std::string_view)> note_;
   std::mutex mutex_;
   enum class State { Open, Closing, Closed };
   std::atomic<State> state_{State::Open};

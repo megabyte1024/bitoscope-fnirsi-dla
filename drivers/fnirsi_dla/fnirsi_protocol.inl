@@ -69,10 +69,12 @@ constexpr std::array<uint8_t, kDirectCommandSize> buildDirectCommand(
 
 constexpr std::vector<uint8_t> buildFramedCommand(FramedCommand cmd,
                                                    std::span<const uint8_t> payload) {
+  const auto length = static_cast<uint16_t>(payload.size() + 2);
   std::vector<uint8_t> crc_input;
-  crc_input.reserve(2 + payload.size());
+  crc_input.reserve(3 + payload.size());
   crc_input.push_back(static_cast<uint8_t>(cmd));
-  crc_input.push_back(static_cast<uint8_t>(payload.size() + 1));
+  crc_input.push_back(static_cast<uint8_t>(length & 0xFF));
+  crc_input.push_back(static_cast<uint8_t>(length >> 8));
   for (uint8_t b : payload) {
     crc_input.push_back(b);
   }
@@ -145,55 +147,52 @@ buildParameterSetting(uint64_t sample_rate_hz, int32_t threshold_millivolts,
   const uint16_t centivolts_bits = static_cast<uint16_t>(*centivolts_opt);
 
   std::array<uint8_t, kParameterSettingSize> p{};
-  // WHY: ParameterSetting bytes 0 to 3 are confirmed unsafe to set nonzero: left 0.
-  p[4] = 0x01;
-  p[6] = static_cast<uint8_t>(sample_rate_hz & 0xFF);
-  p[7] = static_cast<uint8_t>((sample_rate_hz >> 8) & 0xFF);
-  p[8] = static_cast<uint8_t>((sample_rate_hz >> 16) & 0xFF);
-  p[9] = static_cast<uint8_t>((sample_rate_hz >> 24) & 0xFF);
-  p[10] = *rate_index;
-  p[11] = static_cast<uint8_t>(centivolts_bits & 0xFF);
-  p[12] = static_cast<uint8_t>((centivolts_bits >> 8) & 0xFF);
-  p[13] = 0x00;
-  p[14] = static_cast<uint8_t>(duration_ms & 0xFF);
-  p[15] = static_cast<uint8_t>((duration_ms >> 8) & 0xFF);
-  p[21] = static_cast<uint8_t>(depth_samples & 0xFF);
-  p[22] = static_cast<uint8_t>((depth_samples >> 8) & 0xFF);
-  p[23] = static_cast<uint8_t>((depth_samples >> 16) & 0xFF);
-  p[24] = static_cast<uint8_t>((depth_samples >> 24) & 0xFF);
+  p[3] = 0x01;
+  p[5] = static_cast<uint8_t>(sample_rate_hz & 0xFF);
+  p[6] = static_cast<uint8_t>((sample_rate_hz >> 8) & 0xFF);
+  p[7] = static_cast<uint8_t>((sample_rate_hz >> 16) & 0xFF);
+  p[8] = static_cast<uint8_t>((sample_rate_hz >> 24) & 0xFF);
+  p[9] = *rate_index;
+  p[10] = static_cast<uint8_t>(centivolts_bits & 0xFF);
+  p[11] = static_cast<uint8_t>((centivolts_bits >> 8) & 0xFF);
+  p[13] = static_cast<uint8_t>(duration_ms & 0xFF);
+  p[14] = static_cast<uint8_t>((duration_ms >> 8) & 0xFF);
+  p[20] = static_cast<uint8_t>(depth_samples & 0xFF);
+  p[21] = static_cast<uint8_t>((depth_samples >> 8) & 0xFF);
+  p[22] = static_cast<uint8_t>((depth_samples >> 16) & 0xFF);
+  p[23] = static_cast<uint8_t>((depth_samples >> 24) & 0xFF);
   return p;
 }
 
 constexpr std::array<uint8_t, kSimpleTriggerSize> buildSimpleTrigger(
     uint32_t channel_mask) {
   std::array<uint8_t, kSimpleTriggerSize> p{};
-  p[2] = static_cast<uint8_t>(channel_mask & 0xFF);
-  p[3] = static_cast<uint8_t>((channel_mask >> 8) & 0xFF);
-  p[9] = 0x00;
+  p[1] = static_cast<uint8_t>(channel_mask & 0xFF);
+  p[2] = static_cast<uint8_t>((channel_mask >> 8) & 0xFF);
+  p[8] = 0x00;
   return p;
 }
 
-constexpr std::array<uint8_t, 1> buildStopPayload() { return {0x00}; }
+constexpr std::array<uint8_t, 0> buildStopPayload() { return {}; }
 
-constexpr std::array<uint8_t, 10> buildPwmStart(PwmPort port, uint32_t freq_hz,
-                                                 uint32_t duty_percent) {
+constexpr std::array<uint8_t, 9> buildPwmStart(PwmPort port, uint32_t freq_hz,
+                                                uint32_t duty_percent) {
   const uint32_t duty = (duty_percent > 100) ? 100 : duty_percent;
-  std::array<uint8_t, 10> p{};
-  p[0] = 0x00;
-  p[1] = static_cast<uint8_t>(port);
-  p[2] = static_cast<uint8_t>(freq_hz & 0xFF);
-  p[3] = static_cast<uint8_t>((freq_hz >> 8) & 0xFF);
-  p[4] = static_cast<uint8_t>((freq_hz >> 16) & 0xFF);
-  p[5] = static_cast<uint8_t>((freq_hz >> 24) & 0xFF);
-  p[6] = static_cast<uint8_t>(duty & 0xFF);
-  p[7] = static_cast<uint8_t>((duty >> 8) & 0xFF);
-  p[8] = static_cast<uint8_t>((duty >> 16) & 0xFF);
-  p[9] = static_cast<uint8_t>((duty >> 24) & 0xFF);
+  std::array<uint8_t, 9> p{};
+  p[0] = static_cast<uint8_t>(port);
+  p[1] = static_cast<uint8_t>(freq_hz & 0xFF);
+  p[2] = static_cast<uint8_t>((freq_hz >> 8) & 0xFF);
+  p[3] = static_cast<uint8_t>((freq_hz >> 16) & 0xFF);
+  p[4] = static_cast<uint8_t>((freq_hz >> 24) & 0xFF);
+  p[5] = static_cast<uint8_t>(duty & 0xFF);
+  p[6] = static_cast<uint8_t>((duty >> 8) & 0xFF);
+  p[7] = static_cast<uint8_t>((duty >> 16) & 0xFF);
+  p[8] = static_cast<uint8_t>((duty >> 24) & 0xFF);
   return p;
 }
 
-constexpr std::array<uint8_t, 2> buildPwmStop(PwmPort port) {
-  return {0x00, static_cast<uint8_t>(port)};
+constexpr std::array<uint8_t, 1> buildPwmStop(PwmPort port) {
+  return {static_cast<uint8_t>(port)};
 }
 
 constexpr std::array<uint8_t, 1> buildPwmStopAll() { return {0x14}; }

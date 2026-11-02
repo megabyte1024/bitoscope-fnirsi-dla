@@ -17,6 +17,12 @@ struct DlaModel {
 };
 
 inline constexpr std::string_view kDlaFamilyName = "FNIRSI DLA";
+inline constexpr std::string_view kDlaBootloaderDisplayName = "FNIRSI DLA (bootloader)";
+
+struct DlaIdentity {
+  bool in_bootloader = false;
+  std::string device_name;
+};
 inline constexpr DlaModel kDla16Plus{"DL16", "FNIRSI DLA-16 Plus", true};
 inline constexpr DlaModel kDla32Plus{"DL32", "FNIRSI DLA-32 Plus", false};
 inline constexpr std::array kDlaModels{kDla16Plus, kDla32Plus};

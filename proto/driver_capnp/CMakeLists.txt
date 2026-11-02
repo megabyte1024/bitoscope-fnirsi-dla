@@ -7,6 +7,7 @@ file(MAKE_DIRECTORY "${CAPNPC_OUTPUT_DIR}")
 capnp_generate_cpp(_bitoscope_driver_capnp_srcs _bitoscope_driver_capnp_hdrs
     la_acquisition.capnp
     signal_generator.capnp
+    firmware_update.capnp
 )
 
 add_library(bitoscope_driver_capnp STATIC ${_bitoscope_driver_capnp_srcs} ${_bitoscope_driver_capnp_hdrs})

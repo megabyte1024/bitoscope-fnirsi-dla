@@ -7,6 +7,29 @@ target_include_directories(fnirsi_protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(fnirsi_protocol PUBLIC cxx_std_23)
 bitoscope_enable_warnings(fnirsi_protocol)
 
+add_library(fnirsi_number_text STATIC number_text.cpp)
+target_include_directories(fnirsi_number_text PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(fnirsi_number_text PUBLIC cxx_std_23)
+bitoscope_enable_warnings(fnirsi_number_text)
+
+add_library(fnirsi_firmware_file STATIC firmware_file.cpp sha256.cpp)
+target_include_directories(fnirsi_firmware_file PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fnirsi_firmware_file PRIVATE fnirsi_number_text)
+target_compile_features(fnirsi_firmware_file PUBLIC cxx_std_23)
+bitoscope_enable_warnings(fnirsi_firmware_file)
+
+add_library(fnirsi_firmware_flasher STATIC firmware_flasher.cpp)
+target_include_directories(fnirsi_firmware_flasher PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fnirsi_firmware_flasher PUBLIC fnirsi_protocol PRIVATE fnirsi_number_text)
+target_compile_features(fnirsi_firmware_flasher PUBLIC cxx_std_23)
+bitoscope_enable_warnings(fnirsi_firmware_flasher)
+
+add_library(fnirsi_update_usb STATIC usb_update_transport.cpp)
+target_include_directories(fnirsi_update_usb PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fnirsi_update_usb PUBLIC bitoscope_driver_c_sdk PRIVATE fnirsi_protocol)
+target_compile_features(fnirsi_update_usb PUBLIC cxx_std_23)
+bitoscope_enable_warnings(fnirsi_update_usb)
+
 add_library(fnirsi_transfer_fill_time STATIC transfer_fill_time.cpp)
 target_include_directories(fnirsi_transfer_fill_time PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(fnirsi_transfer_fill_time PUBLIC cxx_std_23)
@@ -35,16 +58,17 @@ target_link_libraries(fnirsi_usb PUBLIC fnirsi_protocol fnirsi_connect_sequence 
 target_compile_features(fnirsi_usb PUBLIC cxx_std_23)
 bitoscope_enable_warnings(fnirsi_usb)
 
-add_library(fnirsi_dla_facets STATIC dla_analyzer.cpp dla_signal_generator.cpp dla_driver.cpp)
+add_library(fnirsi_dla_facets STATIC dla_analyzer.cpp dla_signal_generator.cpp dla_driver.cpp dla_firmware_update.cpp)
 target_include_directories(fnirsi_dla_facets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fnirsi_dla_facets
-    PUBLIC bitoscope_driver_c_sdk fnirsi_protocol fnirsi_transfer_fill_time
+    PUBLIC bitoscope_driver_c_sdk fnirsi_protocol fnirsi_transfer_fill_time fnirsi_firmware_file fnirsi_firmware_flasher
+           bitoscope_driver_ipc
     PRIVATE fnirsi_channel_padding fnirsi_data_rate_limit Threads::Threads)
 target_compile_features(fnirsi_dla_facets PUBLIC cxx_std_23)
 bitoscope_enable_warnings(fnirsi_dla_facets)
 
 add_library(fnirsi_dla_usb STATIC dla_usb.cpp)
-target_link_libraries(fnirsi_dla_usb PUBLIC fnirsi_dla_facets PRIVATE fnirsi_usb)
+target_link_libraries(fnirsi_dla_usb PUBLIC fnirsi_dla_facets PRIVATE fnirsi_usb fnirsi_update_usb)
 target_compile_features(fnirsi_dla_usb PUBLIC cxx_std_23)
 bitoscope_enable_warnings(fnirsi_dla_usb)
 
@@ -107,6 +131,11 @@ target_link_libraries(fnirsi_dla_raw_probe PRIVATE fnirsi_usb fnirsi_raw_lanes f
                                                      fnirsi_protocol bitoscope_console_code_page bitoscope_driver_usb)
 target_compile_features(fnirsi_dla_raw_probe PRIVATE cxx_std_23)
 bitoscope_enable_warnings(fnirsi_dla_raw_probe)
+
+add_executable(fnirsi_dla_update_check tools/update_check.cpp)
+target_link_libraries(fnirsi_dla_update_check PRIVATE fnirsi_usb fnirsi_update_usb fnirsi_protocol bitoscope_driver_usb)
+target_compile_features(fnirsi_dla_update_check PRIVATE cxx_std_23)
+bitoscope_enable_warnings(fnirsi_dla_update_check)
 
 add_executable(fnirsi_dla_pwm_check_throughput tools/pwm_check_throughput.cpp)
 target_link_libraries(fnirsi_dla_pwm_check_throughput PRIVATE fnirsi_pwm_check)

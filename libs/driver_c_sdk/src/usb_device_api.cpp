@@ -211,6 +211,11 @@ extern "C" int bitoscope_usb_control(bitoscope_usb_device* usb, uint8_t request_
   });
 }
 
+extern "C" int bitoscope_usb_clear_halt(bitoscope_usb_device* usb, uint8_t endpoint) {
+  if (usb == nullptr) return sdk::failed(BITOSCOPE_ERROR, "bitoscope_usb_clear_halt(): no device");
+  return sdk::guarded([&] { return sdk::answered(usb->opened->system().clearHalt(endpoint), nullptr); });
+}
+
 extern "C" const char* bitoscope_usb_error_text(void) { return sdk::lastError().c_str(); }
 
 extern "C" void* bitoscope_usb_libusb_context(bitoscope_usb_device* usb) {
@@ -275,6 +280,12 @@ std::expected<size_t, UsbError> UsbDevice::bulkIn(uint8_t endpoint, std::span<ui
   size_t transferred = 0;
   const int status = bitoscope_usb_bulk_in(device_, endpoint, data.data(), data.size(), timeoutMs, &transferred);
   return transferOf(status, transferred);
+}
+
+std::expected<void, UsbError> UsbDevice::clearHalt(uint8_t endpoint) {
+  const int status = bitoscope_usb_clear_halt(device_, endpoint);
+  if (status == BITOSCOPE_OK) return {};
+  return std::unexpected(UsbError{status, bitoscope_usb_error_text(), 0});
 }
 
 std::expected<size_t, UsbError> UsbDevice::control(const UsbSetup& setup, std::span<uint8_t> data,

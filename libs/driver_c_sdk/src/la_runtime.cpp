@@ -12,6 +12,7 @@
 #include <cstring>
 #include <exception>
 #include <expected>
+#include <format>
 #include <mutex>
 #include <new>
 #include <optional>
@@ -520,9 +521,9 @@ FacetAnswer LaRuntime::start(const ipc::la::StartCapture& s) {
   if (selected >= 1 && selected <= ceilings.size() && s.sampleRateMilliHz > ceilings[selected - 1]) {
     const std::string& reason = registration_.rateCeilingReason;
     return ipc::FacetReply{false,
-                           "START refused: " + std::to_string(selected) + " channels: at most " +
-                               rateText(ceilings[selected - 1]) + ", and " + rateText(s.sampleRateMilliHz) +
-                               " was asked for" + (reason.empty() ? "" : ": " + reason),
+                           std::format("START refused: {} channel{}: at most {}, and {} was asked for{}{}", selected,
+                                       selected == 1 ? "" : "s", rateText(ceilings[selected - 1]),
+                                       rateText(s.sampleRateMilliHz), reason.empty() ? "" : ": ", reason),
                            {}};
   }
   if (auto stuck = stopCapture(true)) return ipc::FacetReply{false, "START refused: " + *stuck, {}};

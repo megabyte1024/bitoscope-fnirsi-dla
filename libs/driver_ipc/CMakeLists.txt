@@ -3,6 +3,7 @@
 add_library(bitoscope_driver_ipc STATIC
     ipc_la_acquisition.cpp
     ipc_signal_generator.cpp
+    ipc_firmware_update.cpp
 )
 
 target_include_directories(bitoscope_driver_ipc PUBLIC

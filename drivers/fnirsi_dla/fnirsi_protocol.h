@@ -37,8 +37,11 @@ enum class DirectCommand : uint8_t {
 constexpr std::array<uint8_t, kDirectCommandSize> buildDirectCommand(
     DirectCommand cmd, std::span<const uint8_t> payload = {});
 
+enum class NextStart { kApplication, kBootloader };
+
 struct McuVersion {
-  bool application_mode = false;
+  bool application_running = false;
+  NextStart next_start = NextStart::kApplication;
   int firmware_major = 0;
   int firmware_minor = 0;
   int hardware_version = 0;
@@ -47,8 +50,9 @@ struct McuVersion {
 
 std::optional<McuVersion> parseMcuVersionReply(std::span<const uint8_t> reply);
 
+std::string connectDescription(const McuVersion& version);
+
 struct DeviceData {
-  bool fpga_healthy = false;
   int usb_version = 0;
   int fpga_firmware_version = 0;
   std::string device_name;
@@ -94,8 +98,8 @@ inline constexpr std::array<RateTableEntry, 15> kRateTable{{
 
 constexpr std::optional<uint8_t> rateIndexForHz(uint64_t hz);
 
-inline constexpr size_t kParameterSettingSize = 29;
-inline constexpr size_t kSimpleTriggerSize = 38;
+inline constexpr size_t kParameterSettingSize = 28;
+inline constexpr size_t kSimpleTriggerSize = 37;
 
 constexpr std::optional<int16_t> centivoltsFromMillivolts(int32_t millivolts);
 
@@ -108,7 +112,7 @@ buildParameterSetting(uint64_t sample_rate_hz, int32_t threshold_millivolts,
 constexpr std::array<uint8_t, kSimpleTriggerSize> buildSimpleTrigger(
     uint32_t channel_mask);
 
-constexpr std::array<uint8_t, 1> buildStopPayload();
+constexpr std::array<uint8_t, 0> buildStopPayload();
 
 enum class PwmPort : uint8_t {
   kP0 = 0x10,
@@ -117,9 +121,9 @@ enum class PwmPort : uint8_t {
   kP3 = 0x13,
 };
 
-constexpr std::array<uint8_t, 10> buildPwmStart(PwmPort port, uint32_t freq_hz,
-                                                 uint32_t duty_percent);
-constexpr std::array<uint8_t, 2> buildPwmStop(PwmPort port);
+constexpr std::array<uint8_t, 9> buildPwmStart(PwmPort port, uint32_t freq_hz,
+                                                uint32_t duty_percent);
+constexpr std::array<uint8_t, 1> buildPwmStop(PwmPort port);
 constexpr std::array<uint8_t, 1> buildPwmStopAll();
 
 }

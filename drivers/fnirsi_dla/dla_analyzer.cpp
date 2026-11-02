@@ -121,12 +121,15 @@ std::expected<void, std::string> DlaAnalyzer::prepare(const bitoscope::plugin::C
 }
 
 std::expected<void, std::string> DlaAnalyzer::startDevice() {
+  commands_answered_ = false;
+  stop_answered_ = false;
   if (auto r = device_->sendFramed(FramedCommand::kParameterSetting, parameter_setting_); !r.has_value()) {
     return std::unexpected("ParameterSetting failed: " + r.error());
   }
   if (auto r = device_->sendFramed(FramedCommand::kSimpleTrigger, simple_trigger_); !r.has_value()) {
     return std::unexpected("SimpleTrigger failed: " + r.error());
   }
+  commands_answered_ = true;
   bitoscope_log(BITOSCOPE_LOG_INFO, "%s", started_line_.c_str());
   return {};
 }
@@ -135,12 +138,18 @@ std::expected<void, std::string> DlaAnalyzer::stopDevice() {
   if (auto r = device_->sendFramed(FramedCommand::kStop, buildStopPayload()); !r.has_value()) {
     return std::unexpected("Stop command failed: " + r.error());
   }
+  stop_answered_ = true;
   return {};
 }
 
 std::expected<void, std::string> DlaAnalyzer::capture(const bitoscope::plugin::Capture&,
                                                       bitoscope::plugin::Sink& sink) {
   device_->streamSamples(sink, stream_);
+  const auto fill = sink.ringFill();
+  if (sink.failed() && commands_answered_ && stop_answered_ && fill && fill->highWaterSlots == 0) {
+    bitoscope_log(BITOSCOPE_LOG_ERROR,
+                  "analyzer answers but sends no samples: FPGA image may be damaged; update firmware");
+  }
   bitoscope_log(BITOSCOPE_LOG_INFO, "capture stopped");
   return {};
 }

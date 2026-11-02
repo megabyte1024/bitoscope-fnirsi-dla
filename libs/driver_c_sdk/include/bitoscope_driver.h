@@ -437,6 +437,8 @@ int bitoscope_usb_bulk_in(bitoscope_usb_device* usb, uint8_t endpoint, void* dat
 int bitoscope_usb_control(bitoscope_usb_device* usb, uint8_t request_type, uint8_t request, uint16_t value,
                           uint16_t index, void* data, uint16_t size, uint32_t timeout_ms, size_t* transferred);
 
+int bitoscope_usb_clear_halt(bitoscope_usb_device* usb, uint8_t endpoint);
+
 const char* bitoscope_usb_error_text(void);
 
 void* bitoscope_usb_libusb_context(bitoscope_usb_device* usb);
