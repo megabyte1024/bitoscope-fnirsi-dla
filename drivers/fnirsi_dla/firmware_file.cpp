@@ -160,24 +160,24 @@ std::expected<void, FitRefusal> checkFirmwareFitsAnalyzer(const FirmwareFile& fi
                                                          FlashConfirmations confirmed) {
   if (!analyzer) {
     return std::unexpected(FitRefusal{FitRefusalKind::kAnalyzerModelUnknown,
-                                      "analyzer model is unknown while it runs its bootloader: name model "
-                                      "(16 or 32 channels)"});
+                                      "Analyzer is in update mode and cannot report its model. Choose its "
+                                      "number of channels: 16 or 32."});
   }
   const std::optional<FirmwareModel> fileModel = file.known_model ? file.known_model : firmwareModelHintOf(file_name);
   if (!file.known_model && !confirmed.unknown_file) {
     const std::string hint =
-        fileModel ? std::format("; its name suggests {} analyzers", channelsOf(*fileModel)) : std::string();
+        fileModel ? std::format(" (its name suggests {} analyzers)", channelsOf(*fileModel)) : std::string();
     return std::unexpected(FitRefusal{
         FitRefusalKind::kUnknownFile,
-        std::format("firmware file is none of known FNIRSI files (SHA-256 {}){}: flash it only if sure it suits this "
-                    "{} analyzer",
-                    sha256Hex(file.sha256), hint, channelsOf(*analyzer))});
+        std::format("This file is not one of FNIRSI firmware files known to bitoscope{}. Install it only if you are "
+                    "sure it is made for your {} analyzer. File fingerprint (SHA-256): {}.",
+                    hint, channelsOf(*analyzer), sha256Hex(file.sha256))});
   }
   if (fileModel && *fileModel != *analyzer && !confirmed.other_model) {
     return std::unexpected(FitRefusal{
         FitRefusalKind::kOtherModel,
-        std::format("firmware file is for {} analyzers, this one is {}: its FPGA design may drive pins this board "
-                    "wires differently and damage it",
+        std::format("This firmware file is for {} analyzers; your analyzer is {} model. Installing it can damage "
+                    "your analyzer.",
                     channelsOf(*fileModel), channelsOf(*analyzer))});
   }
   return {};
