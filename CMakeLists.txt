@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.24)
 
-project(bitoscope_fnirsi_dla VERSION 0.3.0 LANGUAGES CXX)
+project(bitoscope_fnirsi_dla VERSION 0.4.0 LANGUAGES CXX)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
@@ -19,6 +19,8 @@ include(cmake/BitoscopeDeps.cmake)
 include(cmake/BitoscopeOwnTargetWarnings.cmake)
 
 include(cmake/BitoscopeBuildJobs.cmake)
+
+include(cmake/BitoscopeOptimization.cmake)
 
 find_package(Threads REQUIRED)
 
@@ -58,6 +60,7 @@ add_subdirectory(libs/plugin_ring)
 add_subdirectory(libs/driver_ring)
 add_subdirectory(libs/plugin_c_sdk)
 add_subdirectory(libs/driver_c_sdk)
+add_subdirectory(libs/driver_usb_sdk)
 add_subdirectory(libs/cpu_placement)
 add_subdirectory(libs/core)
 add_subdirectory(cli)
@@ -69,5 +72,6 @@ if(BITOSCOPE_PRIVATE_TREE)
   add_subdirectory(private)
 endif()
 
-# WHY: Last, after every add_subdirectory: a target added below this line would get no warnings.
+# WHY: Last, after every add_subdirectory: a target added below this line would get no warnings or optimization.
 bitoscope_enable_warnings_on_own_targets("${CMAKE_SOURCE_DIR}")
+bitoscope_optimize_own_targets("${CMAKE_SOURCE_DIR}")

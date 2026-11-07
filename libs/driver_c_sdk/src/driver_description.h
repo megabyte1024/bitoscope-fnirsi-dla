@@ -21,7 +21,6 @@
 #include "frame_output.h"
 #include "ipc_byte_stream.h"
 #include "ipc_protocol_version.h"
-#include "usb_source.h"
 
 namespace bitoscope::plugin_c_sdk {
 
@@ -36,14 +35,10 @@ using DeviceSourceFactory = std::function<std::unique_ptr<DeviceSource>(const bi
 struct DriverRunOptions {
   uint32_t minProtocolMajor = ipc::kProtocolMajor;
   uint32_t maxProtocolMajor = ipc::kProtocolMajor;
-  UsbInventory usbDevices;
-  UsbHeldCheck usbCheck;
-  UsbBusFactory usbBus = makeLibusbBus;
   DeviceSourceFactory deviceSource;
   std::chrono::milliseconds busyRetryDelay = kBusyRetryDelay;
   RetrySleep sleep;
   WatchClock* clock = nullptr;
-  ChangeSourceFactory changeSource;
   WatchTiming watchTiming;
 };
 

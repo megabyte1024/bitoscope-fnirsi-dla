@@ -38,7 +38,9 @@ class SdkDlaUsb final : public DlaUsb {
     }
     std::string description = connectDescription(info.mcu_version);
     std::string device_name = info.device_data.device_name;
-    return OpenedDla{std::move(device), std::move(device_name), std::move(description), false, std::move(handOver)};
+    const DlaUsbDriver usb_driver = device->usbDriver();
+    return OpenedDla{std::move(device), std::move(device_name), std::move(description), false, std::move(handOver),
+                     usb_driver};
   }
 };
 

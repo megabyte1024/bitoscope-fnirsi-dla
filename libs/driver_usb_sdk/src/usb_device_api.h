@@ -6,7 +6,7 @@
 
 #include <memory>
 
-#include "bitoscope_driver.h"
+#include "bitoscope_driver_usb.h"
 #include "usb_device.h"
 
 struct bitoscope_usb_device {
@@ -25,6 +25,8 @@ class ScopedUsbDeviceSystems {
  private:
   UsbDeviceSystemFactory previous_;
 };
+
+UsbDeviceSystemFactory setUsbDeviceSystems(UsbDeviceSystemFactory factory);
 
 bitoscope_usb_device* adoptedUsbDevice(std::unique_ptr<OpenedUsbDevice> opened);
 

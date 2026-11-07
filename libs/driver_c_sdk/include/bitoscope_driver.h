@@ -39,12 +39,13 @@ int bitoscope_set_serial_number(bitoscope_device* device, const char* serial_num
 
 typedef struct bitoscope_progress bitoscope_progress;
 typedef struct bitoscope_found_devices bitoscope_found_devices;
+typedef struct bitoscope_finder bitoscope_finder;
 
 /* IMPLEMENT: The transport a device connects through: what your driver description declares (`transport`), and
  * what each device was found on (bitoscope_found_device's `transport`). One value per transport, the same
  * everywhere; a new transport is a new value.
  *   BITOSCOPE_TRANSPORT_NONE     no connection at all (a simulation); a found device: no place given.
- *   BITOSCOPE_TRANSPORT_USB      USB: give usb_ids; the SDK finds the devices and needs no connection.
+ *   BITOSCOPE_TRANSPORT_USB      USB: give bitoscope_usb_finder(); the SDK finds the devices, no connection.
  *   BITOSCOPE_TRANSPORT_SERIAL   a serial port: the host gives its name (bitoscope_connection's serial_port).
  *   BITOSCOPE_TRANSPORT_NETWORK  a network address and usually a port (bitoscope_connection's network_). */
 typedef enum bitoscope_transport {
@@ -62,16 +63,6 @@ typedef struct bitoscope_connection {
   const char* serial_port;
 } bitoscope_connection;
 
-typedef struct bitoscope_usb_location {
-  uint16_t vendor_id;
-  uint16_t product_id;
-  uint8_t interface_number; /* IMPLEMENT: the interface your usb_ids entry claims */
-  uint8_t bus;
-  uint8_t address;      /* IMPLEMENT: changes each time the device enumerates */
-  const uint8_t* ports; /* IMPLEMENT: the port path from the root hub: 4, 2 for id "usb-1-4.2" */
-  size_t num_ports;
-} bitoscope_usb_location;
-
 typedef struct bitoscope_serial_location {
   const char* port; /* IMPLEMENT: the name you open the port by: "/dev/ttyACM0", "COM3" */
 } bitoscope_serial_location;
@@ -82,26 +73,26 @@ typedef struct bitoscope_network_location {
 } bitoscope_network_location;
 
 /* IMPLEMENT: The device an identify, open or held check is about, as the SDK found it, valid during the
- * call. Your enumerate function fills one in (start from all zeros) for bitoscope_add_located_device(); the SDK
- * copies it, and gives it back to the other functions as it was given. */
+ * call. The SDK copies a device your enumerate function adds, and gives it back to the other functions as it was
+ * given. */
 typedef struct bitoscope_found_device {
   const char* id;                         /* IMPLEMENT: the device's id: the user selects the device by it */
   const bitoscope_connection* connection; /* IMPLEMENT: never NULL; ignored when you add a device */
-  /* IMPLEMENT: What the device was found on, and the member below that holds its place: a new transport gets
-   * a member of its own at the end. NONE: no place given (your enumerate function added it without one). */
+  /* IMPLEMENT: What the device was found on, and where: its place in its transport's own form, read with that
+   * transport's function (bitoscope_usb_location_of(), bitoscope_serial_location_of(),
+   * bitoscope_network_location_of()). NONE: no place given. */
   bitoscope_transport transport;
-  const bitoscope_usb_location* usb;         /* IMPLEMENT: NULL unless transport is BITOSCOPE_TRANSPORT_USB */
-  const bitoscope_serial_location* serial;   /* IMPLEMENT: NULL unless transport is BITOSCOPE_TRANSPORT_SERIAL */
-  const bitoscope_network_location* network; /* IMPLEMENT: NULL unless transport is BITOSCOPE_TRANSPORT_NETWORK */
+  const uint8_t* place;
+  size_t place_size;
   /* IMPLEMENT: Optional: changes each time the device appears anew (it enumerated again, restarted, was plugged
    * in again), and the SDK then identifies it again. NULL or "": it keeps its appearance while present. */
   const char* appearance_key;
 } bitoscope_found_device;
 
-/* IMPLEMENT: Required unless your driver gives usb_ids: adds every device present, by its id with
- * bitoscope_add_found_device(), or with its place and appearance key with bitoscope_add_located_device(), and
- * returns BITOSCOPE_OK (none at all is fine). Any other value: your driver could not look for devices. Identify
- * gives each device its name and facets. */
+/* IMPLEMENT: Required unless your driver gives a finder: adds every device present, by its id with
+ * bitoscope_add_found_device(), or with its place and appearance key with bitoscope_add_serial_device() and the
+ * like, and returns BITOSCOPE_OK (none at all is fine). Any other value: your driver could not look for devices.
+ * Identify gives each device its name and facets. */
 typedef int (*bitoscope_enumerate_fn)(void* user, const bitoscope_connection* connection,
                                       bitoscope_found_devices* found);
 
@@ -132,18 +123,10 @@ typedef int (*bitoscope_open_fn)(void* user, const bitoscope_found_device* found
 typedef void (*bitoscope_close_fn)(void* user, void* session);
 
 /* IMPLEMENT: Optional: says, without using the device, whether another program holds it: BITOSCOPE_BUSY for
- * held, BITOSCOPE_OK for free. It decides for every device of your driver. NULL: devices found by your usb_ids
- * get the SDK's own check; those your enumerate function adds count as free. The SDK calls neither identify nor
+ * held, BITOSCOPE_OK for free. It decides for every device of your driver. NULL: devices your finder finds get
+ * its own check; those your enumerate function adds count as free. The SDK calls neither identify nor
  * open for a device whose check finds it held or without permission. */
 typedef int (*bitoscope_held_check_fn)(void* user, const bitoscope_found_device* device);
-
-/* IMPLEMENT: One USB product your driver drives: the SDK finds these devices itself. */
-typedef struct bitoscope_usb_id {
-  uint16_t vendor_id;
-  uint16_t product_id;
-  uint8_t interface_number; /* IMPLEMENT: the interface your driver claims */
-  const char* generic_name; /* IMPLEMENT: optional: names a busy device never identified; NULL: display_name */
-} bitoscope_usb_id;
 
 /* IMPLEMENT: Your driver. Fill this in (start from all zeros) and pass it to bitoscope_run_driver() from main();
  * the SDK copies it, so it can live on the stack, and the arrays it points to must live while it runs. */
@@ -153,11 +136,10 @@ typedef struct bitoscope_driver {
    * "2.0.3-alpha01". Three numbers without leading zeros; then "-" and letters, digits and dots (at most 32
    * characters in all). */
   const char* version;
-  bitoscope_transport transport; /* IMPLEMENT: required: BITOSCOPE_TRANSPORT_USB when you give usb_ids */
-  /* IMPLEMENT: Required: how your devices are found, ONE of these: the USB products the SDK finds, or your own
-   * enumerate function (for devices that are not USB). */
-  const bitoscope_usb_id* usb_ids;
-  size_t num_usb_ids;
+  bitoscope_transport transport; /* IMPLEMENT: required: the transport your finder needs, if you give one */
+  /* IMPLEMENT: Required: how your devices are found, ONE of these: a finder the SDK made (bitoscope_usb_finder()
+   * for USB products; it must live while the driver runs), or your own enumerate function. */
+  const bitoscope_finder* finder;
   bitoscope_enumerate_fn enumerate;
   bitoscope_identify_fn identify; /* IMPLEMENT: required */
   /* IMPLEMENT: Optional from here on: leave them 0. */
@@ -172,7 +154,19 @@ typedef struct bitoscope_driver {
 
 int bitoscope_run_driver_sized(int argc, char** argv, const bitoscope_driver* driver, size_t driver_size);
 
+void bitoscope_free_finder(bitoscope_finder* finder);
+
 int bitoscope_add_found_device(bitoscope_found_devices* found, const char* id);
+
+int bitoscope_add_serial_device(bitoscope_found_devices* found, const char* id,
+                                const bitoscope_serial_location* location, const char* appearance_key);
+
+int bitoscope_add_network_device(bitoscope_found_devices* found, const char* id,
+                                 const bitoscope_network_location* location, const char* appearance_key);
+
+int bitoscope_serial_location_of(const bitoscope_found_device* device, bitoscope_serial_location* location);
+
+int bitoscope_network_location_of(const bitoscope_found_device* device, bitoscope_network_location* location);
 
 #define bitoscope_add_located_device(found, device) \
   bitoscope_add_located_device_sized((found), (device), sizeof(*(device)))
@@ -363,11 +357,6 @@ typedef struct bitoscope_logic_analyzer {
    * from the stream's start. 0: none, and while bitoscope_stream_usb() streams 3 transfer periods, at least 1 s;
    * BITOSCOPE_NO_SILENCE_LIMIT: never. */
   uint32_t silence_limit_ms;
-  /* IMPLEMENT: 1: the SDK lists "USB transfers" and "USB transfer size (KiB, 0: automatic)" at the end of your logic
-   * analyzer's "Diagnostics" group (ids BITOSCOPE_USB_TRANSFERS_PROPERTY and BITOSCOPE_USB_TRANSFER_KIB_PROPERTY),
-   * and bitoscope_stream_usb() takes transfers and transfer_bytes from them: leave those two 0. A user's size is
-   * taken as it is; 0, the default, is the SDK's own sizing. */
-  int usb_stream_properties;
 } bitoscope_logic_analyzer;
 
 /* IMPLEMENT: A silence_limit_ms that is never reached. */
@@ -376,9 +365,6 @@ typedef struct bitoscope_logic_analyzer {
 /* IMPLEMENT: Your capture function returns within this many ms of STOP. When it does not, the SDK answers STOP as
  * failed and refuses every START until it returns. */
 #define BITOSCOPE_STOP_LIMIT_MS 4500
-
-#define BITOSCOPE_USB_TRANSFERS_PROPERTY "usb_transfers"
-#define BITOSCOPE_USB_TRANSFER_KIB_PROPERTY "usb_transfer_kib"
 
 #define bitoscope_add_logic_analyzer(device, analyzer, reply) \
   bitoscope_add_logic_analyzer_sized((device), (analyzer), sizeof(*(analyzer)), (reply))
@@ -409,93 +395,6 @@ void bitoscope_device_gone(bitoscope_sink* sink, const char* reason);
 int bitoscope_set_device_bytes(bitoscope_sink* sink, const bitoscope_device_bytes* bytes);
 
 int bitoscope_ring_fill(const bitoscope_sink* sink, uint64_t* high_water_slots, uint64_t* slot_count);
-
-typedef struct bitoscope_usb_device bitoscope_usb_device;
-
-#define BITOSCOPE_DEVICE_GONE (-130)
-#define BITOSCOPE_USB_TIMEOUT (-131)
-
-#define BITOSCOPE_USB_SPEED_UNKNOWN 0
-#define BITOSCOPE_USB_SPEED_LOW 1
-#define BITOSCOPE_USB_SPEED_FULL 2
-#define BITOSCOPE_USB_SPEED_HIGH 3
-#define BITOSCOPE_USB_SPEED_SUPER 4
-#define BITOSCOPE_USB_SPEED_SUPER_PLUS 5
-
-int bitoscope_usb_open(const bitoscope_found_device* device, bitoscope_usb_device** usb, bitoscope_reply* reply);
-
-void bitoscope_usb_close(bitoscope_usb_device* usb);
-
-int bitoscope_usb_speed(const bitoscope_usb_device* usb);
-
-int bitoscope_usb_bulk_out(bitoscope_usb_device* usb, uint8_t endpoint, const void* data, size_t size,
-                           uint32_t timeout_ms, size_t* transferred);
-
-int bitoscope_usb_bulk_in(bitoscope_usb_device* usb, uint8_t endpoint, void* data, size_t size, uint32_t timeout_ms,
-                          size_t* transferred);
-
-int bitoscope_usb_control(bitoscope_usb_device* usb, uint8_t request_type, uint8_t request, uint16_t value,
-                          uint16_t index, void* data, uint16_t size, uint32_t timeout_ms, size_t* transferred);
-
-int bitoscope_usb_clear_halt(bitoscope_usb_device* usb, uint8_t endpoint);
-
-const char* bitoscope_usb_error_text(void);
-
-void* bitoscope_usb_libusb_context(bitoscope_usb_device* usb);
-
-void* bitoscope_usb_libusb_handle(bitoscope_usb_device* usb);
-
-/* IMPLEMENT: Optional: called once, on the capture thread, when every transfer is in flight: send your device's
- * start command here. BITOSCOPE_OK streams on; anything else fails the capture (say why with
- * bitoscope_fail_capture() first). */
-typedef int (*bitoscope_usb_started_fn)(void* user);
-
-/* IMPLEMENT: Optional: called once, on the capture thread, when the stream has ended and no transfer is in flight
- * any more, unless your device is gone: send your device's stop command here. Anything but BITOSCOPE_OK is logged
- * as a warning; the capture's outcome stays as it is. */
-typedef int (*bitoscope_usb_stop_fn)(void* user);
-
-/* IMPLEMENT: Optional: turns `num_units` whole units of your device's bytes (unit_bytes each, back to back) into
- * num_units * unit_samples samples of your capture's device bytes (bitoscope_device_bytes),
- * bitoscope_sample_bytes(sink, unit_samples) bytes a unit, at `samples`. BITOSCOPE_OK goes on; anything else fails
- * the capture (bitoscope_fail_capture() first). */
-typedef int (*bitoscope_usb_convert_fn)(void* user, const uint8_t* device_bytes, uint64_t num_units, uint8_t* samples);
-
-/* IMPLEMENT: How bitoscope_stream_usb() streams your device's bulk IN endpoint into the sink. Fill it in (start
- * from all zeros); it is read during the call only. */
-typedef struct bitoscope_usb_stream {
-  bitoscope_usb_device* device; /* IMPLEMENT: required: your device, as bitoscope_usb_open() gave it */
-  uint8_t endpoint;              /* IMPLEMENT: required: the bulk IN endpoint your device sends samples on, 0x81 say */
-  /* IMPLEMENT: Optional from here on: leave them 0. */
-  void* user;                       /* IMPLEMENT: passed to started, convert and stop */
-  bitoscope_usb_started_fn started; /* IMPLEMENT: NULL: you started your device before the call */
-  /* IMPLEMENT: 1: what the endpoint holds is read and thrown away before any transfer is queued; bytes still
-   * arriving after about 1 s of that fail the capture at sample 0, and the host retries it as start-up loss. Use
-   * it only when your device starts in `started`: the bytes of a device already started would go too. */
-  int drain;
-  /* IMPLEMENT: Samples thrown away at the start of the stream (a settling time, say), rounded up to whole
-   * units: unit_samples with convert, else 8 samples in BITOSCOPE_CHANNEL_MAJOR and 1 in BITOSCOPE_SAMPLE_MAJOR. */
-  uint64_t preroll_samples;
-  /* IMPLEMENT: Bytes of each transfer, a multiple of 1024 up to 16 MiB. 0: about 0.1 s of your device's data,
-   * rounded up to whole KiB, at most 1 MiB, so the first data arrives within about 0.2 s at any rate. */
-  uint32_t transfer_bytes;
-  uint32_t transfers; /* IMPLEMENT: transfers kept in flight, 2 to 64; 0: 8 */
-  /* IMPLEMENT: Delivery that falls this many of your device's bytes behind its sample clock fails the capture:
-   * about what your device can hold before it drops data. 0: not checked; never in a buffered capture. */
-  uint64_t lag_limit_bytes;
-  /* IMPLEMENT: For a device whose bytes no bitoscope_device_bytes describes: convert turns each unit of unit_bytes
-   * device bytes into unit_samples samples (a multiple of 8 in BITOSCOPE_CHANNEL_MAJOR). NULL and 0: your device
-   * sends the capture's device bytes. */
-  bitoscope_usb_convert_fn convert;
-  uint32_t unit_bytes;
-  uint32_t unit_samples;
-  const char* device_name; /* IMPLEMENT: names your device in messages ("DLA was disconnected"); NULL: "USB device" */
-  bitoscope_usb_stop_fn stop; /* IMPLEMENT: NULL: nothing is called */
-} bitoscope_usb_stream;
-
-#define bitoscope_stream_usb(sink, stream) bitoscope_stream_usb_sized((sink), (stream), sizeof(*(stream)))
-
-void bitoscope_stream_usb_sized(bitoscope_sink* sink, const bitoscope_usb_stream* stream, size_t stream_size);
 
 /* IMPLEMENT: A waveform in a command: its name and its parameters exactly as the host sent them. Valid during
  * the call it is passed to. */

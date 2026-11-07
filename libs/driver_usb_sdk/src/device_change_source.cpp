@@ -2,7 +2,9 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "device_watch.h"
+#include "usb_watch.h"
+
+#include "frame_output.h"
 
 #if defined(_WIN32)
 

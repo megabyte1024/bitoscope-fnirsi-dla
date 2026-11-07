@@ -11,13 +11,13 @@
 #include <string>
 #include <vector>
 
-#include "bitoscope_driver.h"
+#include "bitoscope_driver_usb.h"
+#include "device_finder.h"
 #include "device_source.h"
-#include "device_watch.h"
 #include "libusb_bus.h"
-#include "plugin_model.h"
 #include "usb_checks.h"
 #include "usb_inventory.h"
+#include "usb_watch.h"
 
 namespace bitoscope::plugin_c_sdk {
 
@@ -34,6 +34,10 @@ struct UsbSourceSeams {
 };
 
 std::unique_ptr<DeviceSource> makeUsbSource(std::span<const bitoscope_usb_id> declared, UsbSourceSeams seams);
+
+std::unique_ptr<DeviceFinder> makeUsbFinder(std::span<const bitoscope_usb_id> ids, UsbSourceSeams seams = {});
+
+std::unique_ptr<DeviceSource> makeUsbSourceOf(const bitoscope_finder& finder, UsbSourceSeams seams);
 
 SourceDevice usbSourceDevice(const FoundUsbDevice& device, std::span<const bitoscope_usb_id> declared);
 

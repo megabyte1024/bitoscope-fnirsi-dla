@@ -7,7 +7,9 @@
 #include <array>
 #include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <string_view>
+#include <utility>
 #include <system_error>
 
 #if defined(__linux__)
@@ -21,6 +23,23 @@ namespace bitoscope::plugin_c_sdk {
 namespace {
 
 constexpr std::string_view kUsbfsDriver = "usbfs";
+
+std::mutex& secondOpenMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+UsbSecondOpen& secondOpenSlot() {
+  static UsbSecondOpen secondOpen;
+  return secondOpen;
+}
+
+#if defined(_WIN32)
+UsbSecondOpen currentSecondOpen() {
+  const std::lock_guard lock(secondOpenMutex());
+  return secondOpenSlot();
+}
+#endif
 
 std::string firstLineOf(const std::filesystem::path& file) {
   std::ifstream stream(file);
@@ -77,13 +96,20 @@ UsbCheck checkUsbOnLinux(const FoundUsbDevice& device, const LinuxUsbCheckSeams&
           "interface " + std::to_string(device.interfaceNumber) + " bound to kernel driver " + driver};
 }
 
-UsbCheck checkUsbOnWindows(const ExclusiveOpenResult& openAttempt) {
+UsbCheck checkUsbOnWindows(const ExclusiveOpenResult& openAttempt, const SecondOpenAttempt& secondAttempt) {
   switch (openAttempt.outcome) {
     case ExclusiveOpenOutcome::opened:
       return {UsbAvailability::free, {}};
     case ExclusiveOpenOutcome::held:
       return {UsbAvailability::busy, {}};
     case ExclusiveOpenOutcome::noWinUsbDriver:
+      if (secondAttempt) {
+        if (const std::optional<ExclusiveOpenResult> second = secondAttempt()) {
+          if (second->outcome == ExclusiveOpenOutcome::opened) return {UsbAvailability::free, {}};
+          if (second->outcome == ExclusiveOpenOutcome::held) return {UsbAvailability::busy, {}};
+          return {UsbAvailability::other, second->detail};
+        }
+      }
       return {UsbAvailability::other, "no WinUSB driver installed"};
     case ExclusiveOpenOutcome::failed:
       break;
@@ -91,9 +117,16 @@ UsbCheck checkUsbOnWindows(const ExclusiveOpenResult& openAttempt) {
   return {UsbAvailability::other, "open failed: " + openAttempt.detail};
 }
 
+UsbSecondOpen setUsbSecondOpen(UsbSecondOpen secondOpen) {
+  const std::lock_guard lock(secondOpenMutex());
+  return std::exchange(secondOpenSlot(), std::move(secondOpen));
+}
+
 UsbCheck checkUsbOnThisPlatform([[maybe_unused]] const FoundUsbDevice& device, [[maybe_unused]] UsbBus& bus) {
 #if defined(_WIN32)
-  return checkUsbOnWindows(bus.tryExclusiveOpen(device));
+  const UsbSecondOpen secondOpen = currentSecondOpen();
+  if (!secondOpen) return checkUsbOnWindows(bus.tryExclusiveOpen(device));
+  return checkUsbOnWindows(bus.tryExclusiveOpen(device), [&secondOpen, &device]() { return secondOpen(device); });
 #elif defined(__linux__)
   return checkUsbOnLinux(device, systemLinuxUsbCheckSeams());
 #else

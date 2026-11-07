@@ -216,7 +216,6 @@ CLogicAnalyzer::CLogicAnalyzer(const plugin::LogicAnalyzerInfo& info) : properti
   c_.properties = properties_.data();
   c_.num_properties = properties_.size();
   c_.silence_limit_ms = info.silenceLimitMs;
-  c_.usb_stream_properties = info.usbStreamProperties ? 1 : 0;
 }
 
 CSignalGenerator::CSignalGenerator(const plugin::SignalGeneratorInfo& info) : properties_(info.properties) {

@@ -6,6 +6,7 @@
 
 #include <expected>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "bitoscope_driver.h"
@@ -30,6 +31,11 @@ class GivenDevice : public CFoundDevice {
   GivenDevice(const SourceDevice& device, const bitoscope_connection& connection)
       : CFoundDevice(device.id, device.location, device.appearanceKey, &connection) {}
 };
+
+std::expected<void, std::string> addFoundDevice(bitoscope_found_devices& found, const char* id,
+                                                plugin::Location location, const char* appearanceKey);
+
+int foundDeviceAnswer(std::string_view function, const std::expected<void, std::string>& added);
 
 enum class DriverCall { identify, open };
 

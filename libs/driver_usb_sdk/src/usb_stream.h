@@ -8,8 +8,8 @@
 #include <string>
 #include <string_view>
 
-#include "bitoscope_driver.h"
-#include "bitoscope_driver_cpp.h"
+#include "bitoscope_driver_usb.h"
+#include "bitoscope_driver_usb_cpp.h"
 #include "usb_stream_transport.h"
 
 namespace bitoscope::plugin_c_sdk {

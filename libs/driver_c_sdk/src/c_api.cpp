@@ -26,10 +26,10 @@
 #include "plugin_model.h"
 #include "private_stdio.h"
 #include "signal_generator_facet.h"
-#include "usb_stream_properties.h"
 
 namespace sdk = bitoscope::plugin_c_sdk;
 namespace ipc = bitoscope::ipc;
+namespace plugin = bitoscope::plugin;
 
 namespace {
 
@@ -67,21 +67,7 @@ T copiedFromPossiblyShorterStruct(const T* from, size_t size) {
   return out;
 }
 
-std::expected<void, std::string> addFound(bitoscope_found_devices& found, const bitoscope_found_device& device) {
-  if (empty(device.id)) return std::unexpected(std::string("device needs id (host picks device by it)"));
-  const std::string id = device.id;
-  if (std::any_of(found.devices.begin(), found.devices.end(), [&](const sdk::SourceDevice& d) { return d.id == id; })) {
-    return std::unexpected("id \"" + id + "\" is found already");
-  }
-  auto location = sdk::locationOf(device);
-  if (!location) return std::unexpected(std::move(location.error()));
-  sdk::SourceDevice located;
-  located.id = id;
-  if (device.appearance_key != nullptr) located.appearanceKey = device.appearance_key;
-  located.location = std::move(*location);
-  found.devices.push_back(std::move(located));
-  return {};
-}
+std::string aboutDevice(const char* id) { return "device \"" + std::string(id != nullptr ? id : "") + "\""; }
 
 bool hasFacet(const bitoscope_device& device, const std::string& name, uint32_t major, uint32_t protocolMajor) {
   return std::any_of(device.facets.begin(), device.facets.end(), [&](const sdk::FacetRegistration& r) {
@@ -187,6 +173,30 @@ int sdk::addOwnFacet(bitoscope_device* device, const bitoscope_facet& f, bool co
   }
 }
 
+namespace bitoscope::plugin_c_sdk {
+
+std::expected<void, std::string> addFoundDevice(bitoscope_found_devices& found, const char* id,
+                                                plugin::Location location, const char* appearanceKey) {
+  if (empty(id)) return std::unexpected(std::string("device needs id (host picks device by it)"));
+  const std::string named = id;
+  if (std::any_of(found.devices.begin(), found.devices.end(), [&](const SourceDevice& d) { return d.id == named; })) {
+    return std::unexpected("id \"" + named + "\" is found already");
+  }
+  SourceDevice located;
+  located.id = named;
+  if (appearanceKey != nullptr) located.appearanceKey = appearanceKey;
+  located.location = std::move(location);
+  found.devices.push_back(std::move(located));
+  return {};
+}
+
+int foundDeviceAnswer(std::string_view function, const std::expected<void, std::string>& added) {
+  if (!added) return refused(nullptr, std::string(function) + ": " + added.error());
+  return BITOSCOPE_OK;
+}
+
+}
+
 extern "C" {
 
 int bitoscope_run_driver_sized(int argc, char** argv, const bitoscope_driver* driver, size_t driver_size) {
@@ -216,11 +226,7 @@ int bitoscope_run_driver_sized(int argc, char** argv, const bitoscope_driver* dr
 int bitoscope_add_found_device(bitoscope_found_devices* found, const char* id) {
   try {
     if (found == nullptr) return BITOSCOPE_ERROR;
-    bitoscope_found_device device{};
-    device.id = id;
-    auto added = addFound(*found, device);
-    if (!added) return refused(nullptr, "bitoscope_add_found_device: " + added.error());
-    return BITOSCOPE_OK;
+    return sdk::foundDeviceAnswer("bitoscope_add_found_device", sdk::addFoundDevice(*found, id, {}, nullptr));
   } catch (...) {
     return BITOSCOPE_ERROR;
   }
@@ -230,8 +236,69 @@ int bitoscope_add_located_device_sized(bitoscope_found_devices* found, const bit
                                        size_t device_size) {
   try {
     if (found == nullptr || device == nullptr) return BITOSCOPE_ERROR;
-    auto added = addFound(*found, copiedFromPossiblyShorterStruct(device, device_size));
-    if (!added) return refused(nullptr, "bitoscope_add_located_device: " + added.error());
+    const bitoscope_found_device given = copiedFromPossiblyShorterStruct(device, device_size);
+    auto location = sdk::locationOf(given);
+    if (!location) return sdk::foundDeviceAnswer("bitoscope_add_located_device", std::unexpected(location.error()));
+    return sdk::foundDeviceAnswer("bitoscope_add_located_device",
+                                  sdk::addFoundDevice(*found, given.id, std::move(*location), given.appearance_key));
+  } catch (...) {
+    return BITOSCOPE_ERROR;
+  }
+}
+
+int bitoscope_add_serial_device(bitoscope_found_devices* found, const char* id,
+                                const bitoscope_serial_location* location, const char* appearance_key) {
+  try {
+    if (found == nullptr) return BITOSCOPE_ERROR;
+    if (location == nullptr || empty(location->port)) {
+      return sdk::foundDeviceAnswer("bitoscope_add_serial_device",
+                                    std::unexpected(aboutDevice(id) + " gives no serial port name"));
+    }
+    return sdk::foundDeviceAnswer(
+        "bitoscope_add_serial_device",
+        sdk::addFoundDevice(*found, id, plugin::toLocation(plugin::SerialLocation{location->port}), appearance_key));
+  } catch (...) {
+    return BITOSCOPE_ERROR;
+  }
+}
+
+int bitoscope_add_network_device(bitoscope_found_devices* found, const char* id,
+                                 const bitoscope_network_location* location, const char* appearance_key) {
+  try {
+    if (found == nullptr) return BITOSCOPE_ERROR;
+    if (location == nullptr || empty(location->address)) {
+      return sdk::foundDeviceAnswer("bitoscope_add_network_device",
+                                    std::unexpected(aboutDevice(id) + " gives no network address"));
+    }
+    const plugin::NetworkLocation network{location->address, location->port};
+    return sdk::foundDeviceAnswer("bitoscope_add_network_device",
+                                  sdk::addFoundDevice(*found, id, plugin::toLocation(network), appearance_key));
+  } catch (...) {
+    return BITOSCOPE_ERROR;
+  }
+}
+
+int bitoscope_serial_location_of(const bitoscope_found_device* device, bitoscope_serial_location* location) {
+  try {
+    if (device == nullptr || location == nullptr) return BITOSCOPE_ERROR;
+    auto given = sdk::locationOf(*device);
+    if (!given || !plugin::serialLocationOf(*given)) return BITOSCOPE_ERROR;
+    location->port = reinterpret_cast<const char*>(device->place);
+    return BITOSCOPE_OK;
+  } catch (...) {
+    return BITOSCOPE_ERROR;
+  }
+}
+
+int bitoscope_network_location_of(const bitoscope_found_device* device, bitoscope_network_location* location) {
+  try {
+    if (device == nullptr || location == nullptr) return BITOSCOPE_ERROR;
+    auto given = sdk::locationOf(*device);
+    if (!given) return BITOSCOPE_ERROR;
+    const auto network = plugin::networkLocationOf(*given);
+    if (!network) return BITOSCOPE_ERROR;
+    location->address = reinterpret_cast<const char*>(device->place + 2);
+    location->port = network->port;
     return BITOSCOPE_OK;
   } catch (...) {
     return BITOSCOPE_ERROR;
@@ -296,7 +363,6 @@ int bitoscope_add_logic_analyzer_sized(bitoscope_device* device, const bitoscope
     if (la.rate_ceiling_reason != nullptr) registration.rateCeilingReason = la.rate_ceiling_reason;
     registration.applyDuringCapture = la.apply_during_capture;
     registration.silenceLimitMs = la.silence_limit_ms;
-    registration.usbStreamProperties = la.usb_stream_properties != 0;
     auto ceilings = rateCeilings(la, registration.sampleRatesMilliHz);
     if (!ceilings) return refused(reply, where + ceilings.error());
     registration.rateCeilingsMilliHz = std::move(*ceilings);
@@ -304,9 +370,6 @@ int bitoscope_add_logic_analyzer_sized(bitoscope_device* device, const bitoscope
     if (!presets) return refused(reply, where + presets.error());
     auto tree = sdk::propertyTreeOf(la.properties, la.num_properties);
     if (!tree) return refused(reply, where + tree.error());
-    if (registration.usbStreamProperties) {
-      if (auto added = sdk::addUsbStreamProperties(*tree); !added) return refused(reply, where + added.error());
-    }
     ipc::la::LaAcquisitionInfo described;
     described.numChannels = la.num_channels;
     described.supportedSampleRatesMilliHz = registration.sampleRatesMilliHz;

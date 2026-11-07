@@ -25,12 +25,14 @@ constexpr int64_t kThresholdLimitCentivolts = 500;
 constexpr int64_t kDefaultThresholdCentivolts = 160;
 constexpr int32_t kMillivoltsPerCentivolt = 10;
 constexpr const char* kDeviceName = "DLA";
+constexpr uint64_t kWchCleanBitsPerSecond = 1'600'000'000;
 
 }
 
 uint64_t prerollSamples(uint32_t preroll_ms, uint64_t hz) { return (uint64_t{preroll_ms} * hz + 999) / 1000; }
 
-DlaAnalyzer::DlaAnalyzer(std::shared_ptr<SampleStreamDevice> device) : device_(std::move(device)) {}
+DlaAnalyzer::DlaAnalyzer(std::shared_ptr<SampleStreamDevice> device, DlaUsbDriver usb_driver)
+    : device_(std::move(device)), usb_driver_(usb_driver) {}
 
 namespace {
 
@@ -65,7 +67,7 @@ bitoscope::plugin::LogicAnalyzerInfo dlaAnalyzerInfo() {
   info.numChannels = kDlaChannels;
   for (const auto& entry : kRateTable) info.sampleRatesMilliHz.push_back(entry.hz * 1000);
   info.properties = dlaAnalyzerProperties();
-  info.usbStreamProperties = true;
+  bitoscope::plugin::addUsbStreamProperties(info.properties);
   for (uint32_t n = 1; n <= kDlaChannels; ++n) info.rateCeilingsMilliHz.push_back(rateCeilingHz(n).value_or(0) * 1000);
   info.rateCeilingReason = kRateCeilingReason;
   // WHY: Wires 1 to 4 of a socket are red, yellow, blue, green; a palette entry's identifier is one past its
@@ -79,6 +81,7 @@ bitoscope::plugin::LogicAnalyzerInfo dlaAnalyzerInfo() {
 
 std::expected<void, std::string> DlaAnalyzer::prepare(const bitoscope::plugin::Capture& capture,
                                                       bitoscope::plugin::Sink& sink) {
+  if (replug_needed_) return std::unexpected(std::format("last capture failed; {}", kWchReplugAdvice));
   const uint64_t hz = capture.sampleRateMilliHz / 1000;
 
   const int32_t threshold_millivolts =
@@ -104,6 +107,16 @@ std::expected<void, std::string> DlaAnalyzer::prepare(const bitoscope::plugin::C
   simple_trigger_ = buildSimpleTrigger(*recorded);
   if (!sink.setDeviceBytes({bitoscope::plugin::Layout::channelMajor, *recorded, 0})) {
     return std::unexpected("SDK refused DLA's device bytes");
+  }
+
+  if (const uint64_t bits_per_second = hz * device_channels;
+      usb_driver_ == DlaUsbDriver::wch && bits_per_second > kWchCleanBitsPerSecond) {
+    const uint64_t tenths = bits_per_second / 100'000'000;
+    const std::string warning = std::format(
+        "{}.{} Gbit/s on WCH driver is above 1.6 Gbit/s it kept clean in tests: capture fails if delivery falls "
+        "behind (nothing broken is saved); WinUSB carries 2 Gbit/s",
+        tenths / 10, tenths % 10);
+    bitoscope_log(BITOSCOPE_LOG_WARNING, "%s", warning.c_str());
   }
 
   stream_ = bitoscope::plugin::UsbStream{};
@@ -145,10 +158,16 @@ std::expected<void, std::string> DlaAnalyzer::stopDevice() {
 std::expected<void, std::string> DlaAnalyzer::capture(const bitoscope::plugin::Capture&,
                                                       bitoscope::plugin::Sink& sink) {
   device_->streamSamples(sink, stream_);
+  if (usb_driver_ == DlaUsbDriver::wch && sink.failed()) {
+    replug_needed_ = true;
+    bitoscope_log(BITOSCOPE_LOG_ERROR, "capture failed; %.*s", static_cast<int>(kWchReplugAdvice.size()),
+                  kWchReplugAdvice.data());
+  }
   const auto fill = sink.ringFill();
   if (sink.failed() && commands_answered_ && stop_answered_ && fill && fill->highWaterSlots == 0) {
     bitoscope_log(BITOSCOPE_LOG_ERROR,
-                  "analyzer answers but sends no samples: FPGA image may be damaged; update firmware");
+                  "analyzer answers but sends no samples: start again; if it still sends none, unplug and replug it; "
+                  "if that does not help, its FPGA image may be damaged: update firmware");
   }
   bitoscope_log(BITOSCOPE_LOG_INFO, "capture stopped");
   return {};

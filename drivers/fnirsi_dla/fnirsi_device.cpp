@@ -5,12 +5,18 @@
 #include "fnirsi_device.h"
 
 #include <string>
+#include <string_view>
+
+#include "wch/wch_device_system.h"
+#include "wch/wch_route.h"
 
 namespace fnirsi {
 
 namespace plugin = bitoscope::plugin;
 
 namespace {
+
+constexpr std::string_view kHaltedEndpointText = "LIBUSB_ERROR_PIPE";
 
 plugin::DeviceFailure otherFailure(std::string detail) { return {plugin::DeviceProblem::other, std::move(detail)}; }
 
@@ -19,6 +25,11 @@ bool isInEndpoint(uint8_t endpoint) {
   return (endpoint & kDirectionIn) != 0;
 }
 
+}
+
+DlaUsbDriver dlaUsbDriverOf(bool on_wch, bool on_windows) {
+  if (on_wch) return DlaUsbDriver::wch;
+  return on_windows ? DlaUsbDriver::winusb : DlaUsbDriver::unnamed;
 }
 
 FnirsiDevice::~FnirsiDevice() { close(); }
@@ -33,8 +44,9 @@ std::expected<size_t, TransferFailure> FnirsiDevice::UsbTransport::bulkTransfer(
   auto moved = isInEndpoint(endpoint) ? usb_.bulkIn(endpoint, data, timeout_ms) : usb_.bulkOut(endpoint, data, timeout_ms);
   if (!moved) {
     plugin::UsbError& error = moved.error();
+    const bool halted = error.text == kHaltedEndpointText || error.text.starts_with(wch::kWchHaltedEndpointText);
     return std::unexpected(
-        TransferFailure{std::move(error.text), error.status == BITOSCOPE_USB_TIMEOUT, error.transferred});
+        TransferFailure{std::move(error.text), error.status == BITOSCOPE_USB_TIMEOUT, error.transferred, halted});
   }
   return *moved;
 }
@@ -42,20 +54,27 @@ std::expected<size_t, TransferFailure> FnirsiDevice::UsbTransport::bulkTransfer(
 std::expected<void, plugin::DeviceFailure> FnirsiDevice::openAt(const plugin::FoundDevice& unit) {
   auto opened = plugin::UsbDevice::open(unit);
   if (!opened) return std::unexpected(std::move(opened.error()));
-  usb_ = std::move(*opened);
+  adoptUsb(std::move(*opened));
   return connectOpened();
+}
+
+void FnirsiDevice::adoptUsb(plugin::UsbDevice opened) {
+  usb_ = std::move(opened);
+  usb_driver_ = dlaUsbDriverOf(wch::openedOnWch(usb_), kOnWindows);
+  link_.answerWriteTimeouts(usb_driver_ == DlaUsbDriver::wch ? WriteTimeoutAnswer::askForReplug
+                                                             : WriteTimeoutAnswer::resendUntakenQuery);
 }
 
 std::expected<DlaIdentity, plugin::DeviceFailure> FnirsiDevice::readIdentityAt(const plugin::FoundDevice& unit) {
   auto opened = plugin::UsbDevice::open(unit);
   if (!opened) return std::unexpected(std::move(opened.error()));
-  usb_ = std::move(*opened);
+  adoptUsb(std::move(*opened));
   link_.reopen();
   const auto info = identify();
   // WHY: Leave without the Exit farewell: asking the model name must not change what the device is doing.
   closeWith({});
   if (!info) return std::unexpected(otherFailure(info.error()));
-  return DlaIdentity{!info->mcu_version.application_running, info->device_data.device_name};
+  return DlaIdentity{!info->mcu_version.application_running, info->device_data.device_name, usb_driver_};
 }
 
 std::expected<ConnectInfo, std::string> FnirsiDevice::identify() {

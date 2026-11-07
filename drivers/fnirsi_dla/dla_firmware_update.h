@@ -17,7 +17,7 @@
 #include <thread>
 #include <vector>
 
-#include "bitoscope_driver_cpp.h"
+#include "bitoscope_driver_usb_cpp.h"
 #include "firmware_file.h"
 #include "firmware_flasher.h"
 #include "ipc_firmware_update.h"

@@ -11,7 +11,7 @@
 #include <string>
 #include <string_view>
 
-#include "bitoscope_driver_cpp.h"
+#include "bitoscope_driver_usb_cpp.h"
 #include "dla_analyzer.h"
 #include "dla_firmware_update.h"
 #include "dla_model.h"
@@ -20,7 +20,7 @@
 
 namespace fnirsi {
 
-inline constexpr std::string_view kDlaDriverVersion = "0.3.0";
+inline constexpr std::string_view kDlaDriverVersion = "0.4.0";
 
 struct OpenedDla {
   std::shared_ptr<SampleStreamDevice> device;
@@ -28,6 +28,7 @@ struct OpenedDla {
   std::string description;
   bool in_bootloader = false;
   UpdateTransportFactory update_transport;
+  DlaUsbDriver usb_driver = DlaUsbDriver::unnamed;
 };
 
 class DlaUsb {
@@ -46,7 +47,8 @@ using OpenRetrySleep = std::function<void(std::chrono::milliseconds delay)>;
 
 class DlaSession final : public bitoscope::plugin::Session {
  public:
-  DlaSession(std::shared_ptr<SampleStreamDevice> device, std::string name, FirmwareUpdateSetup update);
+  DlaSession(std::shared_ptr<SampleStreamDevice> device, std::string name, FirmwareUpdateSetup update,
+             DlaUsbDriver usb_driver);
   ~DlaSession() override;
   DlaSession(const DlaSession&) = delete;
   DlaSession& operator=(const DlaSession&) = delete;

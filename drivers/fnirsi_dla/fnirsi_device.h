@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-#include "bitoscope_driver_cpp.h"
+#include "bitoscope_driver_usb_cpp.h"
 #include "command_link.h"
 #include "connect_sequence.h"
 #include "dla_model.h"
@@ -20,6 +20,14 @@
 #include "sample_stream_device.h"
 
 namespace fnirsi {
+
+#if defined(_WIN32)
+inline constexpr bool kOnWindows = true;
+#else
+inline constexpr bool kOnWindows = false;
+#endif
+
+DlaUsbDriver dlaUsbDriverOf(bool on_wch, bool on_windows);
 
 struct ConnectInfo {
   McuVersion mcu_version;
@@ -45,6 +53,7 @@ class FnirsiDevice final : public SampleStreamDevice {
   bool isOpen() const { return usb_.isOpen(); }
   bool inBootloader() const { return in_bootloader_; }
   const ConnectInfo& connectInfo() const { return info_; }
+  DlaUsbDriver usbDriver() const { return usb_driver_; }
   bitoscope::plugin::UsbDevice& usb() { return usb_; }
 
   [[nodiscard]] std::expected<void, std::string> sendFramed(
@@ -53,6 +62,7 @@ class FnirsiDevice final : public SampleStreamDevice {
   void streamSamples(bitoscope::plugin::Sink& sink, const bitoscope::plugin::UsbStream& stream) override;
 
  private:
+  void adoptUsb(bitoscope::plugin::UsbDevice opened);
   [[nodiscard]] std::expected<ConnectInfo, std::string> identify();
   [[nodiscard]] std::expected<void, bitoscope::plugin::DeviceFailure> connectOpened();
   void closeWith(std::span<const Farewell> farewell);
@@ -75,6 +85,7 @@ class FnirsiDevice final : public SampleStreamDevice {
   bitoscope::plugin::UsbDevice usb_;
   ConnectInfo info_{};
   bool in_bootloader_ = false;
+  DlaUsbDriver usb_driver_ = DlaUsbDriver::unnamed;
   // WHY: transport_ refers to usb_, so it must be declared after it.
   UsbTransport transport_{usb_};
   CommandLink link_{transport_, &FnirsiDevice::logLinkNote};

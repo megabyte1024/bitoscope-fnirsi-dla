@@ -16,6 +16,23 @@ A unit that cannot be used now, for example because another program is using it,
 "FNIRSI DLA", unavailable, with the reason. A session holds its unit from connecting to closing, so
 no other program takes it between captures.
 
+## Windows: two drivers
+
+On Windows the DLA-16 works with either of two drivers; the driver finds out which one Windows has bound
+to each unit, with no setup. The unit's name says which: "FNIRSI DLA-16 Plus (WinUSB)" or "FNIRSI DLA-16 Plus
+(WCH driver)".
+
+- **WinUSB** ("WCH USB3.0 DEVICE" in Device Manager): up to 2 Gbit/s. After an analyzer stall a replug is
+  usually not needed.
+- **WCH's own driver** ("USB CH372/CH375", the one the manufacturer's application installs): up to 1.6 Gbit/s
+  kept exactly. 2 Gbit/s runs with a warning and fails loudly if delivery falls behind; nothing broken is saved.
+  After a failed capture the analyzer must be unplugged and plugged in again. While the manufacturer's
+  application (DLA-Logic) runs, the unit is listed as in use.
+
+To switch: Device Manager > the analyzer > Update driver > Browse my computer > Let me pick from a list, then
+choose the other driver. Then unplug and plug in the analyzer: right after a switch it often refuses commands
+until it is replugged.
+
 ## Features
 
 - Logic analyzer: 1, 2, 4, 8 or 16 channels, sample rates from 1 MHz to 1 GHz, streamed over USB

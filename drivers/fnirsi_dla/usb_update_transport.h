@@ -11,7 +11,7 @@
 #include <span>
 #include <string>
 
-#include "bitoscope_driver_cpp.h"
+#include "bitoscope_driver_usb_cpp.h"
 #include "update_transport.h"
 
 namespace fnirsi {

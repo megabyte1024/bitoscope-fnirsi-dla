@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "bitoscope_driver_cpp.h"
+#include "bitoscope_driver_usb_cpp.h"
 #include "frame_sender.h"
 
 namespace fnirsi {

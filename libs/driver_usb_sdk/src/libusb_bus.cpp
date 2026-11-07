@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "libusb_stream_transport.h"
+
 namespace bitoscope::plugin_c_sdk {
 
 namespace {
@@ -164,6 +166,10 @@ class LibusbDeviceSystem final : public UsbDeviceSystem {
   }
 
   UsbCall clearHalt(uint8_t endpoint) override { return usbCallOf(libusb_clear_halt(handle_, endpoint)); }
+
+  std::unique_ptr<UsbStreamTransport> streamTransport(uint8_t endpoint) override {
+    return makeLibusbStreamTransport(context_, handle_, endpoint);
+  }
 
   void* libusbContext() override { return context_; }
   void* libusbHandle() override { return handle_; }

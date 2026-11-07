@@ -17,8 +17,9 @@
 #include <utility>
 #include <vector>
 
-#include "libusb_stream_transport.h"
 #include "sink_facts.h"
+#include "usb_device_api.h"
+#include "usb_stream_properties.h"
 
 namespace bitoscope::plugin_c_sdk {
 
@@ -124,13 +125,12 @@ std::expected<Settings, std::string> settingsFor(bitoscope_sink* sink, const Sin
   s.bytesPerSecond = streamBytesPerSecond(facts.rateMilliHz, s.unitBytes, s.unitSamples);
   uint32_t transfers = stream.transfers;
   uint64_t transferBytes = stream.transfer_bytes;
-  if (facts.usbChoice) {
+  if (const auto choice = usbStreamChoice(facts.properties)) {
     if (transfers != 0 || transferBytes != 0) {
-      return std::unexpected(
-          std::string("transfers and transfer_bytes come from USB properties (usb_stream_properties): leave them 0"));
+      return std::unexpected(std::string("transfers and transfer_bytes come from USB properties: leave them 0"));
     }
-    transfers = facts.usbChoice->transfers;
-    transferBytes = uint64_t{facts.usbChoice->transferKib} * kUsbTransferGranuleBytes;
+    transfers = choice->transfers;
+    transferBytes = uint64_t{choice->transferKib} * kUsbTransferGranuleBytes;
   }
   s.transfers = transfers != 0 ? transfers : kDefaultUsbTransfers;
   s.transferBytes = transferBytes != 0 ? static_cast<uint32_t>(transferBytes)
@@ -719,8 +719,11 @@ extern "C" void bitoscope_stream_usb_sized(bitoscope_sink* sink, const bitoscope
       (void)sdk::failedBeforeStream(sink, copied, settings.error());
       return;
     }
-    const auto transport = sdk::makeLibusbStreamTransport(bitoscope_usb_libusb_context(copied.device),
-                                                          bitoscope_usb_libusb_handle(copied.device), copied.endpoint);
+    const auto transport = copied.device->opened->system().streamTransport(copied.endpoint);
+    if (!transport) {
+      (void)sdk::failedBeforeStream(sink, copied, "bitoscope_stream_usb(): USB device cannot stream samples");
+      return;
+    }
     (void)sdk::runUsbStream(sink, copied, *transport);
   } catch (...) {
     bitoscope_fail_capture(sink, "USB stream failed");

@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-#include "plugin_model.h"
+#include "usb_watch.h"
 
 namespace bitoscope::plugin_c_sdk {
 

@@ -10,16 +10,12 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <variant>
 #include <vector>
 
 #include "bitoscope_driver_cpp.h"
 
 namespace bitoscope::plugin_c_sdk {
 
-using UsbLocation = plugin::UsbLocation;
-using SerialLocation = plugin::SerialLocation;
-using NetworkLocation = plugin::NetworkLocation;
 using DeviceLocation = plugin::Location;
 
 struct SourceDevice {

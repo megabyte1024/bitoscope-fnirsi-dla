@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "dla_model.h"
 #include "fnirsi_protocol.h"
 
 namespace fnirsi {
@@ -26,6 +27,7 @@ struct TransferFailure {
   std::string text;
   bool timed_out = false;
   size_t transferred = 0;
+  bool halted = false;
 };
 
 class BulkTransport {
@@ -35,6 +37,8 @@ class BulkTransport {
   virtual std::expected<size_t, TransferFailure> bulkTransfer(uint8_t endpoint, std::span<uint8_t> data,
                                                               unsigned timeout_ms) = 0;
 };
+
+enum class WriteTimeoutAnswer { resendUntakenQuery, askForReplug };
 
 struct Farewell {
   FramedCommand cmd;
@@ -80,12 +84,18 @@ class CommandLink {
         break;
       }
       const TransferFailure& failure = written.error();
+      if (failure.timed_out && write_timeouts_ == WriteTimeoutAnswer::askForReplug) {
+        return std::unexpected(std::format("command write failed: {}; {}", failure.text, kWchReplugAdvice));
+      }
+      if (failure.halted && failure.transferred == 0) {
+        return std::unexpected(std::format("command write failed: {}; {}", failure.text, kReplugAdvice));
+      }
       if (attempts == 1 || !failure.timed_out || failure.transferred != 0) {
         return std::unexpected("command write failed: " + failure.text);
       }
       if (attempt >= attempts) {
         return std::unexpected(
-            std::format("command write failed: {} ({} writes, none taken)", failure.text, attempts));
+            std::format("command write failed: {} ({} writes, none taken); {}", failure.text, attempts, kReplugAdvice));
       }
       if (note_) {
         note_(std::format("command 0a {:02x} write not taken ({}), sending it again: write {} of {}",
@@ -124,6 +134,11 @@ class CommandLink {
 
   bool isOpen() const { return state_.load() == State::Open; }
 
+  void answerWriteTimeouts(WriteTimeoutAnswer answer) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    write_timeouts_ = answer;
+  }
+
   void reopen() {
     std::lock_guard<std::mutex> lock(mutex_);
     state_.store(State::Open);
@@ -155,6 +170,9 @@ class CommandLink {
                                                      std::span<const uint8_t> payload) {
     auto buf = buildFramedCommand(cmd, payload);
     if (auto written = transport_.bulkTransfer(kEndpointCommandOut, buf, 2000); !written) {
+      if (written.error().timed_out && write_timeouts_ == WriteTimeoutAnswer::askForReplug) {
+        return std::unexpected(std::format("framed command write failed: {}; {}", written.error().text, kWchReplugAdvice));
+      }
       return std::unexpected("framed command write failed: " + written.error().text);
     }
     return {};
@@ -165,6 +183,7 @@ class CommandLink {
   std::mutex mutex_;
   enum class State { Open, Closing, Closed };
   std::atomic<State> state_{State::Open};
+  WriteTimeoutAnswer write_timeouts_ = WriteTimeoutAnswer::resendUntakenQuery;
 };
 
 }

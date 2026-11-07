@@ -5,26 +5,22 @@
 #pragma once
 
 #include <cstdint>
-#include <optional>
+#include <span>
 
 #include "bitoscope_driver.h"
 #include "device_bytes.h"
+#include "ipc_properties.h"
 
 namespace bitoscope::plugin_c_sdk {
 
 enum class Room { deviceBytes, capturedBytes };
-
-struct UsbStreamChoice {
-  uint32_t transfers = 0;
-  uint32_t transferKib = 0;
-};
 
 struct SinkStreamFacts {
   uint64_t rateMilliHz = 0;
   bool buffered = false;
   bool starting = false;
   uint32_t silenceLimitMs = 0;
-  std::optional<UsbStreamChoice> usbChoice;
+  std::span<const ipc::props::PropertyValue> properties;
   uint64_t unitBytes = 0;
   uint64_t unitSamples = 0;
   uint64_t chunkSamples = 0;

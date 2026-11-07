@@ -29,7 +29,6 @@
 #include "facet_properties.h"
 #include "frame_output.h"
 #include "sink_facts.h"
-#include "usb_stream_properties.h"
 
 using bitoscope::plugin_ring::CaptureRing;
 using bitoscope::plugin_ring::RingChunk;
@@ -51,7 +50,7 @@ struct bitoscope_sink {
   std::vector<uint8_t> scratch;
   bool written = false;
   uint32_t silenceLimitMs = 0;
-  std::optional<bitoscope::plugin_c_sdk::UsbStreamChoice> usbChoice;
+  std::span<const bitoscope::ipc::props::PropertyValue> properties;
 
   bool starting = false;
   std::atomic<bool> stopRequested{false};
@@ -301,7 +300,7 @@ SinkStreamFacts sinkStreamFacts(const bitoscope_sink& sink) {
   facts.buffered = sink.buffered;
   facts.starting = sink.starting;
   facts.silenceLimitMs = sink.silenceLimitMs;
-  facts.usbChoice = sink.usbChoice;
+  facts.properties = sink.properties;
   facts.chunkSamples = samplesPerChunk(sink, Room::capturedBytes);
   if (sink.bytes) {
     facts.unitSamples = sink.bytes->unitSamples();
@@ -554,7 +553,7 @@ FacetAnswer LaRuntime::start(const ipc::la::StartCapture& s) {
   run->cProperties = cValues(run->properties);
   run->capture.properties = run->cProperties.empty() ? nullptr : run->cProperties.data();
   run->capture.num_properties = run->cProperties.size();
-  if (registration_.usbStreamProperties) run->sink.usbChoice = usbStreamChoice(run->properties);
+  run->sink.properties = run->properties;
   if (registration_.prepare != nullptr) {
     bitoscope_reply reply;
     int status = BITOSCOPE_ERROR;

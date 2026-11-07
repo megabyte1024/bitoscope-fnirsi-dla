@@ -143,8 +143,8 @@ std::expected<bitoscope::plugin::FoundDevice, std::string> placeOf(const std::st
     if (device.id == id) {
       bitoscope::plugin::FoundDevice unit;
       unit.id = device.id;
-      unit.location = bitoscope::plugin::UsbLocation{device.vendorId, device.productId, device.interfaceNumber,
-                                                     device.bus,      device.address,   device.ports};
+      unit.location = bitoscope::plugin::toLocation(bitoscope::plugin::UsbLocation{
+          device.vendorId, device.productId, device.interfaceNumber, device.bus, device.address, device.ports});
       return unit;
     }
     ids += (ids.empty() ? "" : ", ") + device.id;

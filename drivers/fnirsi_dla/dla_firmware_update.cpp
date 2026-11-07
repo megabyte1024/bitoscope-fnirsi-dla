@@ -310,6 +310,9 @@ void DlaFirmwareUpdate::launch(FlashImages images, bool program_only) {
   last_progress_sent_ = {};
   FlashEvents events;
   events.on_progress = [this](const FlashProgress& progress) { onProgress(progress); };
+  events.on_log = [](std::string_view line) {
+    bitoscope_log(BITOSCOPE_LOG_INFO, "%.*s", static_cast<int>(line.size()), line.data());
+  };
   flasher_ = std::make_unique<FirmwareFlasher>(*transport_, std::move(images), std::move(events), setup_.tuning.timing,
                                                FlashLimits{}, setup_.tuning.sleep);
   FirmwareFlasher* flasher = flasher_.get();

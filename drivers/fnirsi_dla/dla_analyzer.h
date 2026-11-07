@@ -5,13 +5,15 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <expected>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "bitoscope_driver_cpp.h"
+#include "bitoscope_driver_usb_cpp.h"
+#include "dla_model.h"
 #include "fnirsi_protocol.h"
 #include "sample_stream_device.h"
 
@@ -29,7 +31,7 @@ bitoscope::plugin::LogicAnalyzerInfo dlaAnalyzerInfo();
 
 class DlaAnalyzer final : public bitoscope::plugin::LogicAnalyzer {
  public:
-  explicit DlaAnalyzer(std::shared_ptr<SampleStreamDevice> device);
+  DlaAnalyzer(std::shared_ptr<SampleStreamDevice> device, DlaUsbDriver usb_driver);
 
   std::expected<void, std::string> prepare(const bitoscope::plugin::Capture& capture,
                                            bitoscope::plugin::Sink& sink) override;
@@ -41,12 +43,14 @@ class DlaAnalyzer final : public bitoscope::plugin::LogicAnalyzer {
   std::expected<void, std::string> stopDevice();
 
   std::shared_ptr<SampleStreamDevice> device_;
+  DlaUsbDriver usb_driver_;
   std::array<uint8_t, kParameterSettingSize> parameter_setting_{};
   std::array<uint8_t, kSimpleTriggerSize> simple_trigger_{};
   bitoscope::plugin::UsbStream stream_;
   std::string started_line_;
   bool commands_answered_ = false;
   bool stop_answered_ = false;
+  std::atomic<bool> replug_needed_ = false;
 };
 
 }

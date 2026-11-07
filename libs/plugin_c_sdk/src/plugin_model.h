@@ -18,12 +18,6 @@
 
 namespace bitoscope::plugin_c_sdk {
 
-struct UsbId {
-  uint16_t vendor = 0;
-  uint16_t product = 0;
-  bool operator==(const UsbId&) const = default;
-};
-
 using FacetAnswer = std::variant<ipc::FacetReply, ipc::Refusal>;
 
 struct ApplyRefusal {

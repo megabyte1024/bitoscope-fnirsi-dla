@@ -10,12 +10,15 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
-#include "bitoscope_driver_cpp.h"
+#include "bitoscope_driver_usb_cpp.h"
 #include "device_location.h"
+#include "driver_calls.h"
+#include "place_bytes.h"
 #include "libusb_bus.h"
 #include "plugin_model.h"
 
@@ -125,13 +128,10 @@ std::string wrongDirection(uint8_t endpoint, std::string_view wanted) {
 std::expected<UsbPlace, std::string> placeOf(const bitoscope_found_device* device) {
   if (device == nullptr) return std::unexpected(std::string("bitoscope_usb_open(): no device"));
   const std::string id = device->id != nullptr ? device->id : "";
-  if (device->transport != BITOSCOPE_TRANSPORT_USB || device->usb == nullptr) {
-    return std::unexpected("device \"" + id + "\" was not found on USB");
-  }
-  const bitoscope_usb_location& usb = *device->usb;
-  UsbPlace place{usb.vendor_id, usb.product_id, usb.interface_number, usb.bus, usb.address, {}};
-  if (usb.ports != nullptr) place.ports.assign(usb.ports, usb.ports + usb.num_ports);
-  return place;
+  const auto location = locationOf(*device);
+  const auto usb = location ? plugin::usbLocationOf(*location) : std::nullopt;
+  if (!usb) return std::unexpected("device \"" + id + "\" was not found on USB");
+  return UsbPlace{usb->vendorId, usb->productId, usb->interfaceNumber, usb->bus, usb->address, usb->ports};
 }
 
 }
@@ -144,6 +144,11 @@ ScopedUsbDeviceSystems::ScopedUsbDeviceSystems(UsbDeviceSystemFactory factory) {
 ScopedUsbDeviceSystems::~ScopedUsbDeviceSystems() {
   const std::lock_guard lock(systemsMutex());
   systems() = std::move(previous_);
+}
+
+UsbDeviceSystemFactory setUsbDeviceSystems(UsbDeviceSystemFactory factory) {
+  const std::lock_guard lock(systemsMutex());
+  return std::exchange(systems(), std::move(factory));
 }
 
 bitoscope_usb_device* adoptedUsbDevice(std::unique_ptr<OpenedUsbDevice> opened) {
@@ -249,6 +254,27 @@ std::expected<size_t, UsbError> transferOf(int status, size_t transferred) {
 
 }
 
+Location toLocation(const UsbLocation& location) {
+  Location out{Transport::usb, {}};
+  plugin_c_sdk::appendLe16(out.place, location.vendorId);
+  plugin_c_sdk::appendLe16(out.place, location.productId);
+  out.place.push_back(location.interfaceNumber);
+  out.place.push_back(location.bus);
+  out.place.push_back(location.address);
+  out.place.insert(out.place.end(), location.ports.begin(), location.ports.end());
+  return out;
+}
+
+std::optional<UsbLocation> usbLocationOf(const Location& location) {
+  constexpr size_t kHeaderBytes = 7;
+  constexpr size_t kMostPorts = 7;
+  const std::vector<uint8_t>& place = location.place;
+  if (location.transport != Transport::usb || place.size() < kHeaderBytes) return std::nullopt;
+  if (place.size() > kHeaderBytes + kMostPorts) return std::nullopt;
+  return UsbLocation{plugin_c_sdk::le16At(place, 0), plugin_c_sdk::le16At(place, 2), place[4], place[5], place[6],
+                     std::vector<uint8_t>(place.begin() + kHeaderBytes, place.end())};
+}
+
 std::expected<UsbDevice, DeviceFailure> UsbDevice::open(const FoundDevice& device) {
   const plugin_c_sdk::CFoundDevice found(device.id, device.location, device.appearanceKey, nullptr);
   bitoscope_usb_device* opened = nullptr;
@@ -268,6 +294,7 @@ UsbDevice& UsbDevice::operator=(UsbDevice&& other) noexcept {
 void UsbDevice::close() { bitoscope_usb_close(std::exchange(device_, nullptr)); }
 
 UsbSpeed UsbDevice::speed() const { return static_cast<UsbSpeed>(bitoscope_usb_speed(device_)); }
+
 
 std::expected<size_t, UsbError> UsbDevice::bulkOut(uint8_t endpoint, std::span<const uint8_t> data,
                                                    uint32_t timeoutMs) {
@@ -303,4 +330,41 @@ void* UsbDevice::libusbContext() const { return bitoscope_usb_libusb_context(dev
 
 void* UsbDevice::libusbHandle() const { return bitoscope_usb_libusb_handle(device_); }
 
+}
+
+extern "C" int bitoscope_usb_location_of(const bitoscope_found_device* device, bitoscope_usb_location* location) {
+  namespace plugin = bitoscope::plugin;
+  try {
+    if (device == nullptr || location == nullptr) return BITOSCOPE_ERROR;
+    const auto given = bitoscope::plugin_c_sdk::locationOf(*device);
+    const auto usb = given ? plugin::usbLocationOf(*given) : std::nullopt;
+    if (!usb) return BITOSCOPE_ERROR;
+    constexpr size_t kHeaderBytes = 7;
+    *location = bitoscope_usb_location{usb->vendorId, usb->productId, usb->interfaceNumber, usb->bus, usb->address,
+                                       usb->ports.empty() ? nullptr : device->place + kHeaderBytes, usb->ports.size()};
+    return BITOSCOPE_OK;
+  } catch (...) {
+    return BITOSCOPE_ERROR;
+  }
+}
+
+extern "C" int bitoscope_add_usb_device(bitoscope_found_devices* found, const char* id,
+                                        const bitoscope_usb_location* location, const char* appearance_key) {
+  namespace plugin = bitoscope::plugin;
+  namespace sdk = bitoscope::plugin_c_sdk;
+  try {
+    if (found == nullptr) return BITOSCOPE_ERROR;
+    if (location == nullptr || (location->ports == nullptr && location->num_ports > 0)) {
+      return sdk::foundDeviceAnswer(
+          "bitoscope_add_usb_device",
+          std::unexpected("device \"" + std::string(id != nullptr ? id : "") + "\" gives no USB place"));
+    }
+    plugin::UsbLocation usb{location->vendor_id, location->product_id, location->interface_number, location->bus,
+                            location->address, {}};
+    if (location->ports != nullptr) usb.ports.assign(location->ports, location->ports + location->num_ports);
+    return sdk::foundDeviceAnswer("bitoscope_add_usb_device",
+                                  sdk::addFoundDevice(*found, id, plugin::toLocation(usb), appearance_key));
+  } catch (...) {
+    return BITOSCOPE_ERROR;
+  }
 }

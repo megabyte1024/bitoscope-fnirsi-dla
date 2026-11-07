@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 
 #include "usb_inventory.h"
@@ -33,7 +34,13 @@ std::filesystem::path linuxDeviceNode(const std::filesystem::path& deviceNodes, 
 
 UsbCheck checkUsbOnLinux(const FoundUsbDevice& device, const LinuxUsbCheckSeams& seams);
 
-UsbCheck checkUsbOnWindows(const ExclusiveOpenResult& openAttempt);
+using SecondOpenAttempt = std::function<std::optional<ExclusiveOpenResult>()>;
+
+UsbCheck checkUsbOnWindows(const ExclusiveOpenResult& openAttempt, const SecondOpenAttempt& secondAttempt = {});
+
+using UsbSecondOpen = std::function<std::optional<ExclusiveOpenResult>(const FoundUsbDevice& device)>;
+
+UsbSecondOpen setUsbSecondOpen(UsbSecondOpen secondOpen);
 
 UsbCheck checkUsbOnThisPlatform(const FoundUsbDevice& device, UsbBus& bus);
 

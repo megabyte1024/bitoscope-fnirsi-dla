@@ -11,6 +11,7 @@
 #include <thread>
 #include <utility>
 
+#include "device_finder.h"
 #include "driver_source.h"
 #include "identity_cache.h"
 #include "plugin_model.h"
@@ -320,9 +321,8 @@ std::unique_ptr<DeviceSource> deviceSourceFor(const bitoscope_driver& driver, co
   std::unique_ptr<DeviceSource> source;
   if (options.deviceSource) {
     source = options.deviceSource(driver, connection);
-  } else if (driver.num_usb_ids > 0) {
-    source = makeUsbSource(std::span<const bitoscope_usb_id>(driver.usb_ids, driver.num_usb_ids),
-                           UsbSourceSeams{options.usbDevices, options.usbCheck, options.usbBus, options.changeSource});
+  } else if (driver.finder != nullptr) {
+    source = finderOf(*driver.finder).source(driver, connection);
   } else {
     source = makeEnumerateSource(driver, connection);
   }
@@ -339,21 +339,16 @@ std::expected<void, std::string> checkDriverDescription(const bitoscope_driver& 
     return std::unexpected("driver description's transport " + std::to_string(static_cast<int>(driver.transport)) +
                            " is none of BITOSCOPE_TRANSPORT_NONE, _USB, _SERIAL, _NETWORK");
   }
-  const bool byUsb = driver.num_usb_ids > 0;
-  if (byUsb && driver.transport != BITOSCOPE_TRANSPORT_USB) {
-    return std::unexpected(std::string("driver description gives usb_ids, so its transport is "
-                                       "BITOSCOPE_TRANSPORT_USB"));
+  const bool byFinder = driver.finder != nullptr;
+  if (!byFinder && driver.enumerate == nullptr) {
+    return std::unexpected(std::string("driver description has no way to find devices: give finder or enumerate"));
   }
-  if (byUsb && driver.usb_ids == nullptr) {
-    return std::unexpected("driver description counts " + std::to_string(driver.num_usb_ids) +
-                           " usb_ids but gives none");
+  if (byFinder && driver.enumerate != nullptr) {
+    return std::unexpected(
+        std::string("driver description gives both finder and enumerate: give finder or enumerate, not both"));
   }
-  if (!byUsb && driver.enumerate == nullptr) {
-    return std::unexpected(std::string("driver description has no way to find devices: give usb_ids or enumerate"));
-  }
-  if (byUsb && driver.enumerate != nullptr) {
-    return std::unexpected(std::string("driver description gives both usb_ids and enumerate: give usb_ids or "
-                                       "enumerate, not both"));
+  if (byFinder) {
+    if (auto checked = finderOf(*driver.finder).checkDriver(driver); !checked) return checked;
   }
   if (driver.identify == nullptr) return std::unexpected(std::string("driver description has no identify function"));
   return {};

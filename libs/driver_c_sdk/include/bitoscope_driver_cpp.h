@@ -168,31 +168,6 @@ class Sink {
   bitoscope_sink* sink_;
 };
 
-class UsbDevice;
-
-// IMPLEMENT: How streamUsb() streams your device's bulk IN endpoint into the sink: bitoscope_usb_stream's fields of
-// the same names (bitoscope_driver.h), with `user` gone: the functions are std::function's.
-struct UsbStream {
-  UsbDevice* device = nullptr;  // IMPLEMENT: required: your device, as UsbDevice::open() gave it
-  uint8_t endpoint = 0;
-  // IMPLEMENT: started and convert: an error fails the capture with it as the reason; stop: an error is logged as
-  // a warning. convert's `samples` has room for exactly the units in `deviceBytes`.
-  std::function<std::expected<void, std::string>()> started;
-  std::function<std::expected<void, std::string>()> stop;
-  bool drain = false;
-  uint64_t prerollSamples = 0;
-  uint32_t transferBytes = 0;
-  uint32_t transfers = 0;
-  uint64_t lagLimitBytes = 0;
-  std::function<std::expected<void, std::string>(std::span<const uint8_t> deviceBytes, std::span<uint8_t> samples)>
-      convert;
-  uint32_t unitBytes = 0;
-  uint32_t unitSamples = 0;
-  std::string deviceName;
-};
-
-void streamUsb(Sink& sink, const UsbStream& stream);
-
 // IMPLEMENT: What a logic analyzer has, as identify describes it: bitoscope_logic_analyzer's fields of the same
 // names (bitoscope_driver.h), the functions gone (they are LogicAnalyzer's) and the properties a tree.
 struct LogicAnalyzerInfo {
@@ -205,7 +180,6 @@ struct LogicAnalyzerInfo {
   std::vector<ChannelPreset> channelPresets;
   std::string rateCeilingReason;
   uint32_t silenceLimitMs = 0;
-  bool usbStreamProperties = false;
 };
 
 class LogicAnalyzer {
@@ -344,17 +318,6 @@ struct Connection {
   std::optional<std::string> serialPort;
 };
 
-// IMPLEMENT: Where a USB device was found: bitoscope_usb_location's fields.
-struct UsbLocation {
-  uint16_t vendorId = 0;
-  uint16_t productId = 0;
-  uint8_t interfaceNumber = 0;
-  uint8_t bus = 0;
-  uint8_t address = 0;
-  std::vector<uint8_t> ports;
-  bool operator==(const UsbLocation&) const = default;
-};
-
 // IMPLEMENT: Where a serial device was found: bitoscope_serial_location's field.
 struct SerialLocation {
   std::string port;
@@ -368,21 +331,28 @@ struct NetworkLocation {
   bool operator==(const NetworkLocation&) const = default;
 };
 
-// IMPLEMENT: Where a device was found, one alternative per transport; std::monostate: no place given.
-using Location = std::variant<std::monostate, UsbLocation, SerialLocation, NetworkLocation>;
+// IMPLEMENT: Where a device was found (bitoscope_found_device's transport and place): its place in that transport's
+// own form, made with toLocation() and read with usbLocationOf(), serialLocationOf() or networkLocationOf().
+struct Location {
+  Transport transport = Transport::none;
+  std::vector<uint8_t> place;
+  bool operator==(const Location&) const = default;
+};
 
-// IMPLEMENT: The device an identify, open or held check is about: bitoscope_found_device's fields, its place one
-// Location.
+Location toLocation(const SerialLocation& location);
+Location toLocation(const NetworkLocation& location);
+
+std::optional<SerialLocation> serialLocationOf(const Location& location);
+std::optional<NetworkLocation> networkLocationOf(const Location& location);
+
+// IMPLEMENT: The device an identify, open or held check is about: bitoscope_found_device's fields.
 struct FoundDevice {
   std::string id;
   Location location;
   std::string appearanceKey;
   Connection connection;
 
-  Transport transport() const;
-  const UsbLocation* usb() const { return std::get_if<UsbLocation>(&location); }
-  const SerialLocation* serial() const { return std::get_if<SerialLocation>(&location); }
-  const NetworkLocation* network() const { return std::get_if<NetworkLocation>(&location); }
+  Transport transport() const { return location.transport; }
 };
 
 // IMPLEMENT: One device your enumerate found: its id, and optionally where it is and its appearance key (a new
@@ -402,60 +372,6 @@ struct DeviceFailure {
   std::string detail;
 };
 
-// IMPLEMENT: The link speed of a USB device (BITOSCOPE_USB_SPEED_...).
-enum class UsbSpeed : int {
-  unknown = BITOSCOPE_USB_SPEED_UNKNOWN,
-  low = BITOSCOPE_USB_SPEED_LOW,
-  full = BITOSCOPE_USB_SPEED_FULL,
-  high = BITOSCOPE_USB_SPEED_HIGH,
-  super = BITOSCOPE_USB_SPEED_SUPER,
-  superPlus = BITOSCOPE_USB_SPEED_SUPER_PLUS,
-};
-
-// IMPLEMENT: A control transfer's setup: bit 7 of requestType set reads from the device.
-struct UsbSetup {
-  uint8_t requestType = 0;
-  uint8_t request = 0;
-  uint16_t value = 0;
-  uint16_t index = 0;
-};
-
-// IMPLEMENT: Why a transfer failed: status BITOSCOPE_USB_TIMEOUT, BITOSCOPE_DEVICE_GONE or BITOSCOPE_ERROR; the
-// text names the cause; transferred: bytes that went through before it.
-struct UsbError {
-  int status = BITOSCOPE_ERROR;
-  std::string text;
-  size_t transferred = 0;
-};
-
-class UsbDevice {
- public:
-  static std::expected<UsbDevice, DeviceFailure> open(const FoundDevice& device);
-
-  UsbDevice() = default;
-  explicit UsbDevice(bitoscope_usb_device* device) : device_(device) {}
-  UsbDevice(UsbDevice&& other) noexcept : device_(std::exchange(other.device_, nullptr)) {}
-  UsbDevice& operator=(UsbDevice&& other) noexcept;
-  UsbDevice(const UsbDevice&) = delete;
-  UsbDevice& operator=(const UsbDevice&) = delete;
-  ~UsbDevice() { close(); }
-
-  void close();
-  bool isOpen() const { return device_ != nullptr; }
-  UsbSpeed speed() const;
-  std::expected<size_t, UsbError> bulkOut(uint8_t endpoint, std::span<const uint8_t> data, uint32_t timeoutMs);
-  std::expected<size_t, UsbError> bulkIn(uint8_t endpoint, std::span<uint8_t> data, uint32_t timeoutMs);
-  std::expected<size_t, UsbError> control(const UsbSetup& setup, std::span<uint8_t> data, uint32_t timeoutMs);
-  std::expected<void, UsbError> clearHalt(uint8_t endpoint);
-  void* libusbContext() const;
-  void* libusbHandle() const;
-
-  bitoscope_usb_device* get() const { return device_; }
-
- private:
-  bitoscope_usb_device* device_ = nullptr;
-};
-
 // IMPLEMENT: What open reports while it works (BITOSCOPE_PROGRESS_...).
 enum class ProgressCode : int {
   other = BITOSCOPE_PROGRESS_OTHER,
@@ -473,12 +389,16 @@ class Progress {
   bitoscope_progress* progress_;
 };
 
-// IMPLEMENT: One USB product your driver drives (bitoscope_usb_id); genericName is optional (empty: displayName).
-struct UsbId {
-  uint16_t vendorId = 0;
-  uint16_t productId = 0;
-  uint8_t interfaceNumber = 0;
-  std::string genericName;
+class Finder {
+ public:
+  Finder() = default;
+  explicit Finder(bitoscope_finder* finder);
+
+  const bitoscope_finder* get() const { return finder_.get(); }
+  explicit operator bool() const { return finder_ != nullptr; }
+
+ private:
+  std::shared_ptr<bitoscope_finder> finder_;
 };
 
 // IMPLEMENT: Not USB: every device present (bitoscope_enumerate_fn); an error: devices could not be looked for.
@@ -497,12 +417,12 @@ struct DriverDescription {
   std::string displayName;  // IMPLEMENT: required: your driver's name, as users see it
   // IMPLEMENT: required: your driver's version as X.Y.Z with an optional suffix: "1.0.0", "1.2.3-beta", "2.0.3-alpha01"
   std::string version;
-  Transport transport = Transport::none;  // IMPLEMENT: required: Transport::usb when you give usbIds
-  std::vector<UsbId> usbIds;  // IMPLEMENT: required, or enumerate: how your devices are found
+  Transport transport = Transport::none;  // IMPLEMENT: required: the transport your finder needs, if you give one
+  Finder finder;  // IMPLEMENT: required, or enumerate: how your devices are found, e.g. usbFinder({...})
   EnumerateFunction enumerate;
   IdentifyFunction identify;  // IMPLEMENT: required
   OpenFunction open;          // IMPLEMENT: required
-  HeldCheckFunction heldCheck;  // IMPLEMENT: optional: empty: USB devices get the SDK's own check, others count as free
+  HeldCheckFunction heldCheck;  // IMPLEMENT: optional: empty: devices your finder finds get its check, others are free
 };
 
 class Driver {
@@ -525,7 +445,6 @@ class Driver {
   static int heldCheck(void* user, const bitoscope_found_device* device);
 
   DriverDescription description_;
-  std::vector<bitoscope_usb_id> usbIds_;
   bitoscope_driver driver_{};
 };
 

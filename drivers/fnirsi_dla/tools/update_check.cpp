@@ -17,6 +17,7 @@
 #include "libusb_bus.h"
 #include "usb_inventory.h"
 #include "usb_update_transport.h"
+#include "wch/wch_route.h"
 
 namespace {
 
@@ -45,8 +46,8 @@ std::expected<bitoscope::plugin::FoundDevice, std::string> placeOf(const std::st
     if (device.id == id) {
       bitoscope::plugin::FoundDevice unit;
       unit.id = device.id;
-      unit.location = bitoscope::plugin::UsbLocation{device.vendorId, device.productId, device.interfaceNumber,
-                                                     device.bus,      device.address,   device.ports};
+      unit.location = bitoscope::plugin::toLocation(bitoscope::plugin::UsbLocation{
+          device.vendorId, device.productId, device.interfaceNumber, device.bus, device.address, device.ports});
       return unit;
     }
     ids += (ids.empty() ? "" : ", ") + device.id;
@@ -129,6 +130,7 @@ int fail(const std::string& why) {
 }
 
 int main(int argc, char** argv) {
+  fnirsi::wch::useWchDriverWhereBound();
   std::string id = "usb-1-15";
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];

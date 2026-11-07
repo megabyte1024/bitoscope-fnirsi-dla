@@ -13,6 +13,7 @@
 
 #include "cpp_twins.h"
 #include "device_location.h"
+#include "place_bytes.h"
 #include "driver_model.h"
 #include "facet_properties.h"
 #include "frame_output.h"
@@ -210,11 +211,31 @@ uint32_t Capture::enumIndex(std::string_view id) const {
   return static_cast<uint32_t>(valueOf(*this, id, &PropertyValue::enumIndex));
 }
 
-Transport FoundDevice::transport() const {
-  if (usb() != nullptr) return Transport::usb;
-  if (serial() != nullptr) return Transport::serial;
-  if (network() != nullptr) return Transport::network;
-  return Transport::none;
+Location toLocation(const SerialLocation& location) {
+  Location out{Transport::serial, {}};
+  plugin_c_sdk::appendTerminatedText(out.place, location.port);
+  return out;
+}
+
+Location toLocation(const NetworkLocation& location) {
+  Location out{Transport::network, {}};
+  plugin_c_sdk::appendLe16(out.place, location.port);
+  plugin_c_sdk::appendTerminatedText(out.place, location.address);
+  return out;
+}
+
+std::optional<SerialLocation> serialLocationOf(const Location& location) {
+  if (location.transport != Transport::serial) return std::nullopt;
+  const auto port = plugin_c_sdk::terminatedTextAt(location.place, 0);
+  if (!port) return std::nullopt;
+  return SerialLocation{std::string(*port)};
+}
+
+std::optional<NetworkLocation> networkLocationOf(const Location& location) {
+  if (location.transport != Transport::network || location.place.size() < 2) return std::nullopt;
+  const auto address = plugin_c_sdk::terminatedTextAt(location.place, 2);
+  if (!address) return std::nullopt;
+  return NetworkLocation{std::string(*address), plugin_c_sdk::le16At(location.place, 0)};
 }
 
 bool Progress::report(ProgressCode code, std::string_view detail) {
@@ -278,16 +299,13 @@ int deviceCall(bitoscope_reply* reply, std::string_view function, Call&& call) {
 
 }
 
+Finder::Finder(bitoscope_finder* finder) : finder_(finder, &bitoscope_free_finder) {}
+
 Driver::Driver(DriverDescription description) : description_(std::move(description)) {
-  for (const UsbId& id : description_.usbIds) {
-    usbIds_.push_back(bitoscope_usb_id{id.vendorId, id.productId, id.interfaceNumber,
-                                       id.genericName.empty() ? nullptr : id.genericName.c_str()});
-  }
   driver_.display_name = description_.displayName.c_str();
   driver_.version = description_.version.c_str();
   driver_.transport = static_cast<bitoscope_transport>(description_.transport);
-  driver_.usb_ids = usbIds_.empty() ? nullptr : usbIds_.data();
-  driver_.num_usb_ids = usbIds_.size();
+  driver_.finder = description_.finder.get();
   driver_.enumerate = description_.enumerate ? &Driver::enumerate : nullptr;
   driver_.identify = description_.identify ? &Driver::identify : nullptr;
   driver_.user = this;

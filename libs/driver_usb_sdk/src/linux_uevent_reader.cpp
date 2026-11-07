@@ -14,7 +14,7 @@
 #include <string>
 #include <system_error>
 
-#include "device_watch.h"
+#include "usb_watch.h"
 
 namespace bitoscope::plugin_c_sdk {
 

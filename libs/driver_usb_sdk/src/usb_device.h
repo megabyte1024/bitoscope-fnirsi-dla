@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "usb_inventory.h"
+#include "usb_stream_transport.h"
 
 namespace bitoscope::plugin_c_sdk {
 
@@ -48,8 +49,9 @@ class UsbDeviceSystem {
   virtual UsbCall bulk(uint8_t endpoint, std::span<uint8_t> data, uint32_t timeoutMs) = 0;
   virtual UsbCall control(const UsbSetup& setup, std::span<uint8_t> data, uint32_t timeoutMs) = 0;
   virtual UsbCall clearHalt(uint8_t endpoint) = 0;
-  virtual void* libusbContext() = 0;
-  virtual void* libusbHandle() = 0;
+  virtual std::unique_ptr<UsbStreamTransport> streamTransport([[maybe_unused]] uint8_t endpoint) { return nullptr; }
+  virtual void* libusbContext() { return nullptr; }
+  virtual void* libusbHandle() { return nullptr; }
 };
 
 using UsbDeviceSystemFactory = std::function<std::expected<std::unique_ptr<UsbDeviceSystem>, UsbCall>()>;
