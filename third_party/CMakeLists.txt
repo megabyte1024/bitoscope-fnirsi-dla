@@ -29,7 +29,7 @@
 # A single-config generator (Makefiles, Ninja) builds one configuration per build tree: configure
 # this directory once per configuration, with -DCMAKE_BUILD_TYPE, into its own build directory and
 # the same CMAKE_INSTALL_PREFIX.
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.30...4.4)
 project(bitoscope_fnirsi_dla16_deps NONE)
 
 include(ExternalProject)

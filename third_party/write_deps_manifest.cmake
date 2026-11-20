@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: MIT
-
 # Run at install time by third_party/CMakeLists.txt (install(CODE)): writes deps/bitoscope_deps.cmake,
 # the marker the project build looks for and the record of which submodule commit each installed
 # library came from. Inputs: BITOSCOPE_DEPS_SOURCE_DIRS (the directories holding the submodules,
@@ -9,6 +8,8 @@
 #
 # A commit that cannot be read (no git, or a source tree that is not a git checkout) is written as
 # an empty string, and the project build then skips the comparison for that library.
+
+cmake_minimum_required(VERSION 3.30...4.4)
 
 set(_submodules ${BITOSCOPE_DEPS_BUILT_SUBMODULES})
 

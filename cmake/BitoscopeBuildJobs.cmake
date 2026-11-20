@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MIT
 
+cmake_minimum_required(VERSION 3.30...4.4)
+
 cmake_host_system_information(RESULT BITOSCOPE_PHYSICAL_CORES QUERY NUMBER_OF_PHYSICAL_CORES)
 if(NOT BITOSCOPE_PHYSICAL_CORES GREATER 0)
   set(BITOSCOPE_PHYSICAL_CORES 1)

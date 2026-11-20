@@ -45,7 +45,8 @@ until it is replugged.
 
 Linux and Windows; macOS is not supported yet.
 
-- CMake 3.24 or newer
+- CMake 3.30 or newer. KDE neon's own CMake is new enough; Ubuntu 24.04's own `cmake` package (3.28) is not,
+  there install a newer one, for example with `sudo snap install cmake --classic`
 - A C++23 compiler: GCC 13 or newer on Linux, MSVC from Visual Studio 2022 (or its Build Tools, with
   the "Desktop development with C++" workload) on Windows
 - Git, to fetch Cap'n Proto as a submodule
