@@ -37,6 +37,8 @@ std::array<uint8_t, kWchCommandBytes> wchSetTimeoutsRequest(uint32_t timeoutMs);
 
 std::array<uint8_t, kWchCommandBytes> wchSetExclusiveRequest(bool exclusive);
 
+std::expected<std::array<uint8_t, kWchCommandBytes>, std::string> wchResetInEndpointRequest(uint8_t endpointAddress);
+
 TransferStatus wchTransferStatusOf(uint32_t windowsError);
 
 UsbCallKind wchCallKindOf(uint32_t windowsError);

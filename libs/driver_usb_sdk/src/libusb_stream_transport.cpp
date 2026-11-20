@@ -45,6 +45,7 @@ class LibusbStreamTransport final : public UsbStreamTransport {
       libusb_handle_events_timeout_completed(context_, &tv, nullptr);
     }
     for (auto& t : transfers_) release(*t);
+    if (rawIoOn_) (void)switchRawIo(false, 0);
   }
 
   uint64_t nowMs() override {
@@ -60,8 +61,10 @@ class LibusbStreamTransport final : public UsbStreamTransport {
     return bulkReadAnswer(rc, transferred);
   }
 
-  // WHY: RAW_IO is not set: need unverified; libusb_endpoint_set_raw_io() is in 1.0.30, not in 1.0.27.
-  std::expected<void, std::string> allocate(uint32_t transfers, uint32_t transferBytes) override {
+  std::expected<void, std::string> allocate(uint32_t transfers, uint32_t transferBytes, bool rawIo) override {
+    if (rawIo) {
+      if (auto on = switchRawIo(true, transferBytes); !on) return on;
+    }
     done_.reserve(transfers);
     transfers_.reserve(transfers);
     for (uint32_t i = 0; i < transfers; ++i) {
@@ -115,6 +118,25 @@ class LibusbStreamTransport final : public UsbStreamTransport {
   }
 
  private:
+  std::expected<void, std::string> switchRawIo([[maybe_unused]] bool on, [[maybe_unused]] uint32_t transferBytes) {
+#if defined(_WIN32) && defined(LIBUSB_API_VERSION) && LIBUSB_API_VERSION >= 0x0100010C
+    if (libusb_endpoint_supports_raw_io(handle_, endpoint_) != 1) return {};
+    if (on) {
+      const int limit = libusb_get_max_raw_io_transfer_size(handle_, endpoint_);
+      if (limit > 0 && transferBytes > static_cast<uint32_t>(limit)) {
+        return std::unexpected("transfers of " + std::to_string(transferBytes) + " bytes exceed RAW_IO limit of " +
+                               std::to_string(limit) + " bytes");
+      }
+    }
+    if (const int code = libusb_endpoint_set_raw_io(handle_, endpoint_, on ? 1 : 0); code != LIBUSB_SUCCESS) {
+      return std::unexpected(std::string("RAW_IO could not be switched ") + (on ? "on: " : "off: ") +
+                             libusb_error_name(code));
+    }
+    rawIoOn_ = on;
+#endif
+    return {};
+  }
+
   struct Transfer {
     LibusbStreamTransport* owner = nullptr;
     uint32_t index = 0;
@@ -180,6 +202,7 @@ class LibusbStreamTransport final : public UsbStreamTransport {
   libusb_context* context_;
   libusb_device_handle* handle_;
   uint8_t endpoint_;
+  bool rawIoOn_ = false;
   std::vector<std::unique_ptr<Transfer>> transfers_;
   std::mutex mutex_;
   std::vector<TransferDone> done_;

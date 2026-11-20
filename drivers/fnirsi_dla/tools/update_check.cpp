@@ -12,11 +12,13 @@
 #include <thread>
 #include <vector>
 
+#include "dla_usb_list.h"
 #include "fnirsi_device.h"
 #include "fnirsi_protocol.h"
 #include "libusb_bus.h"
 #include "usb_inventory.h"
 #include "usb_update_transport.h"
+#include "wch/routed_device_system.h"
 #include "wch/wch_route.h"
 
 namespace {
@@ -148,7 +150,8 @@ int main(int argc, char** argv) {
   fnirsi::FnirsiDevice device;
   if (auto opened = device.openAt(*unit); !opened) return fail("open: " + opened.error().detail);
   say(std::format("{} opened: {}", id, modeOf(device.connectInfo().mcu_version)));
-  fnirsi::UsbUpdateTransport usb(device.handOverUsb(), *unit);
+  fnirsi::UsbUpdateTransport usb(device.handOverUsb(), *unit,
+                                 [] { return fnirsi::listDlaOnUsb(fnirsi::wch::makeDlaDeviceSystem); });
   drain(usb);
 
   say("reset into bootloader");

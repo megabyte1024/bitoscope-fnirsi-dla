@@ -58,6 +58,7 @@ struct Settings {
   uint64_t unitsPerChunk = 0;
   uint64_t prerollBytes = 0;
   bool drain = false;
+  bool rawIo = false;
   std::optional<uint64_t> silenceLimitMs;
   uint64_t lagLimitBytes = 0;
   uint64_t bytesPerSecond = 0;
@@ -65,6 +66,7 @@ struct Settings {
   bitoscope_usb_convert_fn convert = nullptr;
   const DeviceByteCompactor* compactor = nullptr;
   bitoscope_usb_stop_fn stop = nullptr;
+  bitoscope_usb_halted_fn halted = nullptr;
   void* user = nullptr;
   std::string deviceName;
 };
@@ -144,9 +146,11 @@ std::expected<Settings, std::string> settingsFor(bitoscope_sink* sink, const Sin
   }
   s.lagLimitBytes = facts.buffered ? 0 : stream.lag_limit_bytes;
   s.drain = stream.drain != 0;
+  s.rawIo = stream.raw_io != 0;
   s.started = stream.started;
   s.convert = stream.convert;
   s.stop = stream.stop;
+  s.halted = stream.halted;
   s.user = stream.user;
   s.deviceName = stream.device_name != nullptr && stream.device_name[0] != '\0' ? stream.device_name : "USB device";
   if (stream.device == nullptr) return std::unexpected(std::string("bitoscope_stream_usb(): no USB device"));
@@ -264,6 +268,11 @@ class UsbStreamRun {
 
  private:
   enum class End { none, done, failed, gone };
+  bool haltOpen_ = false;
+  static constexpr uint64_t kHaltMark = 0xB17C'05C0'9E37'79B9ull;
+  static constexpr uint64_t kMarkStep = 0x9E37'79B9'7F4A'7C15ull;
+  std::vector<uint64_t> marks_;
+  uint64_t markCount_ = 0;
 
   struct Slot {
     bool inFlight = false;
@@ -293,6 +302,9 @@ class UsbStreamRun {
   void drain() {
     std::vector<uint8_t> scratch(kDrainReadBytes);
     uint64_t thrownAway = 0;
+    if (s_.stop != nullptr && s_.stop(s_.user) != BITOSCOPE_OK) {
+      logText(BITOSCOPE_LOG_WARNING, s_.deviceName + " stop failed");
+    }
     const uint64_t startMs = t_.nowMs();
     for (;;) {
       const auto read = t_.readNow(scratch, kDrainReadTimeoutMs);
@@ -320,7 +332,7 @@ class UsbStreamRun {
   }
 
   void startTransfers() {
-    if (auto allocated = t_.allocate(s_.transfers, s_.transferBytes); !allocated) {
+    if (auto allocated = t_.allocate(s_.transfers, s_.transferBytes, s_.rawIo); !allocated) {
       fail("USB transfers could not be set up: " + allocated.error());
       return;
     }
@@ -334,6 +346,7 @@ class UsbStreamRun {
   }
 
   bool submit(uint32_t transfer) {
+    markForHalt(transfer);
     if (auto submitted = t_.submit(transfer); !submitted) {
       if (submitted.error().noDevice) {
         gone(submitted.error().name);
@@ -368,11 +381,56 @@ class UsbStreamRun {
     }
   }
 
+  void markForHalt(uint32_t transfer) {
+    if (s_.halted == nullptr) return;
+    if (marks_.size() <= transfer) marks_.resize(transfer + 1u);
+    marks_[transfer] = kHaltMark ^ (++markCount_ * kMarkStep);
+    const auto buffer = t_.received(transfer);
+    auto* bytes = const_cast<uint8_t*>(buffer.data());
+    for (size_t at = 0; at + sizeof(uint64_t) <= buffer.size(); at += sizeof(uint64_t)) {
+      std::memcpy(bytes + at, &marks_[transfer], sizeof(uint64_t));
+    }
+  }
+
+  bool holdsUpTo(uint32_t transfer, uint64_t valid) const {
+    if (valid < sizeof(uint64_t)) return true;
+    const size_t last = static_cast<size_t>((valid - 1) / sizeof(uint64_t) * sizeof(uint64_t));
+    uint64_t word = 0;
+    std::memcpy(&word, t_.received(transfer).data() + last, sizeof(uint64_t));
+    return word != marks_[transfer];
+  }
+
+  bool crossedHalt(uint32_t transfer, uint64_t& bytes) {
+    if (haltOpen_ && !holdsUpTo(transfer, sizeof(uint64_t))) {
+      bytes = 0;
+      return true;
+    }
+    if (s_.halted == nullptr || streamBytes_ == 0) return false;
+    uint64_t valid = 0;
+    if (s_.halted(s_.user, streamBytes_, &valid) != BITOSCOPE_OK || valid > t_.received(transfer).size()) {
+      return false;
+    }
+    if (!holdsUpTo(transfer, valid)) {
+      logText(BITOSCOPE_LOG_WARNING, s_.deviceName + " endpoint halt not crossed: aborted transfer holds fewer than " +
+                                         std::to_string(valid) + " bytes device counted");
+      return false;
+    }
+    haltOpen_ = true;
+    bytes = valid;
+    logText(BITOSCOPE_LOG_INFO, "USB link recovered at sample " + at() + " after endpoint halt; nothing lost");
+    return true;
+  }
+
   void handle(uint32_t transfer, TransferStatus status, uint64_t bytes, uint64_t now) {
     if (status == TransferStatus::noDevice) {
       recent_.remember(transferStatusName(status));
       gone(transferStatusName(status));
       return;
+    }
+    if (status == TransferStatus::stall && crossedHalt(transfer, bytes)) {
+      status = TransferStatus::completed;
+    } else if (status == TransferStatus::completed) {
+      haltOpen_ = false;
     }
     if (status != TransferStatus::completed) {
       recent_.remember(transferStatusName(status));
@@ -401,6 +459,7 @@ class UsbStreamRun {
   }
 
   void resubmit(uint32_t transfer, uint64_t bytes) {
+    markForHalt(transfer);
     auto submitted = t_.submit(transfer);
     if (submitted) {
       recent_.remember(kCompletedName);
@@ -571,7 +630,9 @@ CppStream::CppStream(plugin::Sink& sink, const plugin::UsbStream& stream)
   c_.user = this;
   c_.started = stream.started ? &CppStream::started : nullptr;
   c_.stop = stream.stop ? &CppStream::stop : nullptr;
+  c_.halted = stream.halted ? &CppStream::halted : nullptr;
   c_.drain = stream.drain ? 1 : 0;
+  c_.raw_io = stream.rawIo ? 1 : 0;
   c_.preroll_samples = stream.prerollSamples;
   c_.transfer_bytes = stream.transferBytes;
   c_.transfers = stream.transfers;
@@ -615,6 +676,25 @@ int CppStream::guarded(Call&& call, std::string_view what) {
   } catch (...) {
     return failed(std::string(what) + " threw");
   }
+}
+
+int CppStream::halted(void* user, uint64_t received, uint64_t* valid) {
+  auto* self = static_cast<CppStream*>(user);
+  std::string why;
+  try {
+    auto answer = self->stream_.halted(received);
+    if (answer) {
+      *valid = *answer;
+      return BITOSCOPE_OK;
+    }
+    why = answer.error();
+  } catch (const std::exception& e) {
+    why = std::string("halted threw: ") + e.what();
+  } catch (...) {
+    why = "halted threw";
+  }
+  logText(BITOSCOPE_LOG_WARNING, self->deviceName() + " endpoint halt not crossed: " + why);
+  return BITOSCOPE_ERROR;
 }
 
 int CppStream::started(void* user) {

@@ -97,7 +97,11 @@ struct UsbStream {
   // a warning. convert's `samples` has room for exactly the units in `deviceBytes`.
   std::function<std::expected<void, std::string>()> started;
   std::function<std::expected<void, std::string>()> stop;
+  // IMPLEMENT: optional, as bitoscope_usb_halted_fn: the bytes at the start of the halted transfer that are good,
+  // from your device's own count; an error fails the capture as without it (logged as a warning).
+  std::function<std::expected<uint64_t, std::string>(uint64_t receivedBytes)> halted;
   bool drain = false;
+  bool rawIo = false;
   uint64_t prerollSamples = 0;
   uint32_t transferBytes = 0;
   uint32_t transfers = 0;

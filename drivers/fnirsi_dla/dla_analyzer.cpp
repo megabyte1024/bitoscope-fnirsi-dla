@@ -159,9 +159,17 @@ std::expected<void, std::string> DlaAnalyzer::capture(const bitoscope::plugin::C
                                                       bitoscope::plugin::Sink& sink) {
   device_->streamSamples(sink, stream_);
   if (usb_driver_ == DlaUsbDriver::wch && sink.failed()) {
-    replug_needed_ = true;
-    bitoscope_log(BITOSCOPE_LOG_ERROR, "capture failed; %.*s", static_cast<int>(kWchReplugAdvice.size()),
-                  kWchReplugAdvice.data());
+    const EndpointReset reset = device_->endpointResetAfterStream();
+    if (reset.outcome == EndpointResetOutcome::done) {
+      bitoscope_log(BITOSCOPE_LOG_INFO, "endpoint reset after halt");
+    } else {
+      if (reset.outcome == EndpointResetOutcome::failed) {
+        bitoscope_log(BITOSCOPE_LOG_WARNING, "endpoint reset after halt failed: %s", reset.failure.c_str());
+      }
+      replug_needed_ = true;
+      bitoscope_log(BITOSCOPE_LOG_ERROR, "capture failed; %.*s", static_cast<int>(kWchReplugAdvice.size()),
+                    kWchReplugAdvice.data());
+    }
   }
   const auto fill = sink.ringFill();
   if (sink.failed() && commands_answered_ && stop_answered_ && fill && fill->highWaterSlots == 0) {

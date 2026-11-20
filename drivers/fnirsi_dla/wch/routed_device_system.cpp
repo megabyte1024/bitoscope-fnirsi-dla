@@ -52,6 +52,12 @@ class RoutedDeviceSystem final : public UsbDeviceSystem, public WchRoute {
     return chosen_->streamTransport(endpoint);
   }
   bool openedOnWch() const override { return wch_ != nullptr && chosen_ == wch_.get(); }
+  UsbCall resetInEndpoint(uint8_t endpointAddress) override {
+    if (!openedOnWch()) return UsbCall{UsbCallKind::notSupported, "device is not on WCH driver"};
+    auto* route = dynamic_cast<WchRoute*>(chosen_);
+    if (route == nullptr) return UsbCall{UsbCallKind::notSupported, "WCH system has no endpoint reset"};
+    return route->resetInEndpoint(endpointAddress);
+  }
   void* libusbContext() override { return chosen_->libusbContext(); }
   void* libusbHandle() override { return chosen_->libusbHandle(); }
 

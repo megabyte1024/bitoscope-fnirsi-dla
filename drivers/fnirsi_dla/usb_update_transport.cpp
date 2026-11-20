@@ -4,6 +4,7 @@
 
 #include "usb_update_transport.h"
 
+#include <algorithm>
 #include <format>
 #include <string_view>
 #include <thread>
@@ -12,6 +13,8 @@
 #include "fnirsi_protocol.h"
 
 namespace fnirsi {
+
+namespace plugin = bitoscope::plugin;
 
 namespace {
 
@@ -33,14 +36,34 @@ TransferResult resultOf(const std::expected<size_t, bitoscope::plugin::UsbError>
   return {status, error.transferred, error.text};
 }
 
+bool samePlace(const plugin::UsbLocation& a, const plugin::UsbLocation& b) {
+  if (a.bus != b.bus) return false;
+  if (!a.ports.empty() || !b.ports.empty()) return a.ports == b.ports;
+  return a.address == b.address;
 }
 
-UsbUpdateTransport::UsbUpdateTransport(bitoscope::plugin::UsbDevice device, bitoscope::plugin::FoundDevice unit,
+std::vector<plugin::UsbLocation> placesBeside(const std::vector<plugin::FoundDevice>& listed,
+                                              const plugin::FoundDevice& ours) {
+  const std::optional<plugin::UsbLocation> ourPlace = plugin::usbLocationOf(ours.location);
+  std::vector<plugin::UsbLocation> others;
+  for (const plugin::FoundDevice& candidate : listed) {
+    const std::optional<plugin::UsbLocation> place = plugin::usbLocationOf(candidate.location);
+    if (place && !(ourPlace && samePlace(*place, *ourPlace))) others.push_back(*place);
+  }
+  return others;
+}
+
+}
+
+UsbUpdateTransport::UsbUpdateTransport(plugin::UsbDevice device, plugin::FoundDevice unit, UsbCandidates candidates,
                                        ReopenTiming timing, ReopenSleep sleep)
     : device_(std::move(device)),
       unit_(std::move(unit)),
+      candidates_(std::move(candidates)),
       timing_(timing),
-      sleep_(sleep ? std::move(sleep) : ReopenSleep(&sleepFor)) {}
+      sleep_(sleep ? std::move(sleep) : ReopenSleep(&sleepFor)) {
+  if (const auto listed = candidates_(); listed) others_ = placesBeside(*listed, unit_);
+}
 
 TransferResult UsbUpdateTransport::writeCommand(std::span<const uint8_t> packet, uint32_t timeout_ms) {
   return resultOf(device_.bulkOut(kEndpointCommandOut, packet, timeout_ms));
@@ -60,19 +83,54 @@ void UsbUpdateTransport::close() { device_.close(); }
 std::expected<void, std::string> UsbUpdateTransport::reopen() {
   std::chrono::milliseconds waited{0};
   for (;;) {
-    auto opened = bitoscope::plugin::UsbDevice::open(unit_);
-    if (opened) {
-      device_ = std::move(*opened);
-      return {};
+    std::string why = "analyzer not found on USB";
+    const auto listed = candidates_();
+    if (!listed) {
+      why = listed.error();
+    } else {
+      auto chosen = chooseAmong(*listed);
+      if (!chosen) return std::unexpected(std::move(chosen.error()));
+      if (*chosen) {
+        auto opened = plugin::UsbDevice::open(**chosen);
+        if (opened) {
+          device_ = std::move(*opened);
+          unit_ = std::move(**chosen);
+          others_ = placesBeside(*listed, unit_);
+          return {};
+        }
+        why = std::move(opened.error().detail);
+      }
     }
     if (waited >= timing_.give_up) {
       return std::unexpected(std::format("{} not back within {} s: {}", unit_.id,
                                          std::chrono::duration_cast<std::chrono::seconds>(timing_.give_up).count(),
-                                         opened.error().detail));
+                                         why));
     }
     sleep_(timing_.retry);
     waited += timing_.retry;
   }
+}
+
+std::expected<std::optional<plugin::FoundDevice>, std::string> UsbUpdateTransport::chooseAmong(
+    const std::vector<plugin::FoundDevice>& listed) const {
+  const std::optional<plugin::UsbLocation> oldPlace = plugin::usbLocationOf(unit_.location);
+  std::vector<const plugin::FoundDevice*> fresh;
+  for (const plugin::FoundDevice& candidate : listed) {
+    const std::optional<plugin::UsbLocation> place = plugin::usbLocationOf(candidate.location);
+    if (!place) continue;
+    if (oldPlace && samePlace(*place, *oldPlace)) return std::optional<plugin::FoundDevice>(candidate);
+    if (!others_) continue;
+    const bool seenBefore =
+        std::ranges::any_of(*others_, [&place](const plugin::UsbLocation& other) { return samePlace(*place, other); });
+    if (!seenBefore) fresh.push_back(&candidate);
+  }
+  if (fresh.size() == 1) return std::optional<plugin::FoundDevice>(*fresh.front());
+  if (fresh.empty()) return std::optional<plugin::FoundDevice>();
+  std::string ids;
+  for (const plugin::FoundDevice* candidate : fresh) ids += std::format("{}{}", ids.empty() ? "" : ", ", candidate->id);
+  return std::unexpected(std::format("{} not back and several analyzers appeared elsewhere ({}); update does not guess "
+                                     "which one it is, disconnect other analyzers",
+                                     unit_.id, ids));
 }
 
 }

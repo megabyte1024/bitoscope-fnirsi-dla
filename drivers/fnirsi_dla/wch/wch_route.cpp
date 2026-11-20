@@ -22,6 +22,17 @@ bool openedOnWch(const bitoscope::plugin::UsbDevice& device) {
   return route != nullptr && route->openedOnWch();
 }
 
+std::expected<void, std::string> resetWchInEndpoint(const bitoscope::plugin::UsbDevice& device,
+                                                    uint8_t endpointAddress) {
+  bitoscope_usb_device* handle = device.get();
+  if (handle == nullptr || !handle->opened) return std::unexpected(std::string("device not open"));
+  auto* route = dynamic_cast<WchRoute*>(&handle->opened->system());
+  if (route == nullptr || !route->openedOnWch()) return std::unexpected(std::string("device is not on WCH driver"));
+  const sdk::UsbCall reset = route->resetInEndpoint(endpointAddress);
+  if (reset.kind != sdk::UsbCallKind::ok) return std::unexpected(reset.name);
+  return {};
+}
+
 std::optional<sdk::ExclusiveOpenResult> namedWchAnswer(std::optional<sdk::ExclusiveOpenResult> answer) {
   if (answer && answer->outcome == sdk::ExclusiveOpenOutcome::failed) answer->detail = "WCH driver: " + answer->detail;
   return answer;

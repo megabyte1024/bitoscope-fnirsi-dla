@@ -6,14 +6,21 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "dla_driver.h"
+#include "dla_usb_list.h"
 #include "fnirsi_device.h"
 #include "usb_update_transport.h"
+#include "wch/routed_device_system.h"
 
 namespace fnirsi {
 
 namespace {
+
+std::expected<std::vector<bitoscope::plugin::FoundDevice>, std::string> dlaOnUsb() {
+  return listDlaOnUsb(wch::makeDlaDeviceSystem);
+}
 
 class SdkDlaUsb final : public DlaUsb {
  public:
@@ -28,7 +35,7 @@ class SdkDlaUsb final : public DlaUsb {
     if (auto opened = device->openAt(unit); !opened) return std::unexpected(opened.error());
     const ConnectInfo& info = device->connectInfo();
     UpdateTransportFactory handOver = [device, unit]() -> std::unique_ptr<UpdateTransport> {
-      return std::make_unique<UsbUpdateTransport>(device->handOverUsb(), unit);
+      return std::make_unique<UsbUpdateTransport>(device->handOverUsb(), unit, &dlaOnUsb);
     };
     if (device->inBootloader()) {
       const bool bootloaderNext = info.mcu_version.next_start == NextStart::kBootloader;

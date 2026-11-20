@@ -52,6 +52,7 @@ class CppStream {
   template <typename Call>
   int guarded(Call&& call, std::string_view what);
   static int stop(void* user);
+  static int halted(void* user, uint64_t received, uint64_t* valid);
   static int started(void* user);
   static int convert(void* user, const uint8_t* device, uint64_t units, uint8_t* samples);
 

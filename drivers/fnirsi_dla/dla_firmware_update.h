@@ -20,6 +20,7 @@
 #include "bitoscope_driver_usb_cpp.h"
 #include "firmware_file.h"
 #include "firmware_flasher.h"
+#include "firmware_parts.h"
 #include "ipc_firmware_update.h"
 #include "sample_stream_device.h"
 #include "update_transport.h"
@@ -42,6 +43,7 @@ class GatedDevice final : public SampleStreamDevice {
 
   std::expected<void, std::string> sendFramed(FramedCommand cmd, std::span<const uint8_t> payload) override;
   void streamSamples(bitoscope::plugin::Sink& sink, const bitoscope::plugin::UsbStream& stream) override;
+  EndpointReset endpointResetAfterStream() const override { return device_->endpointResetAfterStream(); }
 
  private:
   std::shared_ptr<SampleStreamDevice> device_;
@@ -77,7 +79,7 @@ class DlaFirmwareUpdate {
  private:
   using Answer = std::expected<bitoscope::plugin::CommandAnswer, std::string>;
   struct Verdict {
-    std::optional<FirmwareFile> file;
+    std::optional<FirmwareParts> parts;
     bitoscope::ipc::firmware::CheckReply reply;
   };
 

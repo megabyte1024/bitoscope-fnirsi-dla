@@ -8,8 +8,10 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "bitoscope_driver_usb_cpp.h"
 #include "update_transport.h"
@@ -23,10 +25,12 @@ struct ReopenTiming {
 
 using ReopenSleep = std::function<void(std::chrono::milliseconds)>;
 
+using UsbCandidates = std::function<std::expected<std::vector<bitoscope::plugin::FoundDevice>, std::string>()>;
+
 class UsbUpdateTransport final : public UpdateTransport {
  public:
-  UsbUpdateTransport(bitoscope::plugin::UsbDevice device, bitoscope::plugin::FoundDevice unit, ReopenTiming timing = {},
-                     ReopenSleep sleep = nullptr);
+  UsbUpdateTransport(bitoscope::plugin::UsbDevice device, bitoscope::plugin::FoundDevice unit, UsbCandidates candidates,
+                     ReopenTiming timing = {}, ReopenSleep sleep = nullptr);
 
   TransferResult writeCommand(std::span<const uint8_t> packet, uint32_t timeout_ms) override;
   TransferResult readReply(std::span<uint8_t> reply, uint32_t timeout_ms) override;
@@ -35,8 +39,13 @@ class UsbUpdateTransport final : public UpdateTransport {
   std::expected<void, std::string> reopen() override;
 
  private:
+  [[nodiscard]] std::expected<std::optional<bitoscope::plugin::FoundDevice>, std::string> chooseAmong(
+      const std::vector<bitoscope::plugin::FoundDevice>& listed) const;
+
   bitoscope::plugin::UsbDevice device_;
   bitoscope::plugin::FoundDevice unit_;
+  UsbCandidates candidates_;
+  std::optional<std::vector<bitoscope::plugin::UsbLocation>> others_;
   ReopenTiming timing_;
   ReopenSleep sleep_;
 };

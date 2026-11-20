@@ -25,7 +25,10 @@ struct FlashImages {
   std::span<const uint8_t> mcu;
   std::string fpga_wire_name;
   std::span<const uint8_t> fpga;
+  bool single_image = false;
 };
+
+inline constexpr std::chrono::milliseconds kUsbReturnWait{60'000};
 
 struct FlashTiming {
   std::chrono::milliseconds write_timeout{10'000};
@@ -35,6 +38,8 @@ struct FlashTiming {
   std::chrono::milliseconds pace{30};
   std::chrono::milliseconds phase_pause{500};
   std::chrono::milliseconds reset_wait{1'000};
+  std::chrono::milliseconds usb_return_wait{kUsbReturnWait};
+  std::chrono::milliseconds usb_return_poll{500};
 };
 
 struct FlashLimits {
@@ -42,6 +47,7 @@ struct FlashLimits {
   int writes_per_packet = 6;
   int drain_stalls = 3;
   int drain_replies = 64;
+  int own_image_attempts = 3;
 };
 
 enum class FlashPhase { kPreparing, kMcu, kFpga, kFinishing };
@@ -52,6 +58,7 @@ struct FlashProgress {
   uint64_t bytes_total = 0;
   int attempt = 0;
   int resends = 0;
+  int attempts = 0;
 };
 
 enum class FlashOutcome { kDone, kCancelled, kFailed, kNeedsReplug };
@@ -71,11 +78,12 @@ struct FlashEvents {
 };
 
 using FlashSleep = std::function<void(std::chrono::milliseconds)>;
+using FlashClock = std::function<std::chrono::milliseconds()>;
 
 class FirmwareFlasher {
  public:
   FirmwareFlasher(UpdateTransport& transport, FlashImages images, FlashEvents events = {}, FlashTiming timing = {},
-                  FlashLimits limits = {}, FlashSleep sleep = nullptr);
+                  FlashLimits limits = {}, FlashSleep sleep = nullptr, FlashClock clock = nullptr);
   FirmwareFlasher(const FirmwareFlasher&) = delete;
   FirmwareFlasher& operator=(const FirmwareFlasher&) = delete;
 
@@ -84,7 +92,7 @@ class FirmwareFlasher {
   CancelAnswer requestCancel(bool confirm_cannot_capture);
 
  private:
-  enum class Stop { kRestart, kFail, kReplug, kCancel };
+  enum class Stop { kRestart, kFail, kReplug, kCancel, kLeave, kOwnBootloader };
   struct Interrupt {
     Stop stop = Stop::kFail;
     std::string why;
@@ -97,6 +105,8 @@ class FirmwareFlasher {
   Step<void> flash();
   Step<void> attemptOnce(std::optional<McuVersion>& mode);
   Step<void> sendImage(Image image);
+  Step<void> routeByBootloader(const McuVersion& version, bool entered_from_program);
+  Step<void> runOwnBootloader(bool entered_from_program);
   Step<void> finishInProgram();
   Step<McuVersion> queryVersion();
   Step<void> resetInto(bool bootloader);
@@ -118,7 +128,9 @@ class FirmwareFlasher {
   FlashTiming timing_;
   FlashLimits limits_;
   FlashSleep sleep_;
+  FlashClock clock_;
   FlashProgress progress_;
+  std::optional<FlashResult> own_result_;
 
   std::mutex mutex_;
   bool cancel_requested_ = false;

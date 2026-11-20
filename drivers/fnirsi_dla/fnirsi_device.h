@@ -61,11 +61,14 @@ class FnirsiDevice final : public SampleStreamDevice {
 
   void streamSamples(bitoscope::plugin::Sink& sink, const bitoscope::plugin::UsbStream& stream) override;
 
+  EndpointReset endpointResetAfterStream() const override { return endpoint_reset_; }
+
  private:
   void adoptUsb(bitoscope::plugin::UsbDevice opened);
   [[nodiscard]] std::expected<ConnectInfo, std::string> identify();
   [[nodiscard]] std::expected<void, bitoscope::plugin::DeviceFailure> connectOpened();
   void closeWith(std::span<const Farewell> farewell);
+  void waitForFpgaSteps();
 
   [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> sendDirect(
       DirectCommand cmd, std::span<const uint8_t> payload, bool read_reply);
@@ -86,6 +89,7 @@ class FnirsiDevice final : public SampleStreamDevice {
   ConnectInfo info_{};
   bool in_bootloader_ = false;
   DlaUsbDriver usb_driver_ = DlaUsbDriver::unnamed;
+  EndpointReset endpoint_reset_;
   // WHY: transport_ refers to usb_, so it must be declared after it.
   UsbTransport transport_{usb_};
   CommandLink link_{transport_, &FnirsiDevice::logLinkNote};

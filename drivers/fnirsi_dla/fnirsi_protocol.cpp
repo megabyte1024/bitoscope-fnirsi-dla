@@ -4,13 +4,17 @@
 
 #include "fnirsi_protocol.h"
 
+#include <algorithm>
 #include <format>
+#include <string_view>
 
 namespace fnirsi {
 
 std::string connectDescription(const McuVersion& version) {
   return std::format("MCU fw {}.{}", version.firmware_major, version.firmware_minor);
 }
+
+bool asksStreamStateOverControl(const McuVersion& version) { return version.own_firmware; }
 
 std::optional<McuVersion> parseMcuVersionReply(std::span<const uint8_t> reply) {
   constexpr uint8_t kNextStartApplication = 0x61;
@@ -29,7 +33,32 @@ std::optional<McuVersion> parseMcuVersionReply(std::span<const uint8_t> reply) {
   v.application_running = !bootloaderReportsNoVersion;
   v.hardware_version = reply[6];
   v.product_tier = reply[8];
+  constexpr std::string_view kOwnMark = "megabyte";
+  constexpr size_t kOwnMarkAt = 9;
+  v.own_firmware = reply.size() >= kOwnMarkAt + kOwnMark.size() &&
+                   std::equal(kOwnMark.begin(), kOwnMark.end(), reply.begin() + kOwnMarkAt);
+  constexpr size_t kBusyAt = kOwnMarkAt + kOwnMark.size();
+  v.busy = v.own_firmware && reply.size() > kBusyAt && reply[kBusyAt] != 0;
+  constexpr size_t kBootloaderMarkAt = kOwnMarkAt;
+  v.bootloader_mark = reply.size() > kBootloaderMarkAt ? reply[kBootloaderMarkAt] : uint8_t{0};
   return v;
+}
+
+std::expected<ReadyWait, std::string> waitWhileBusy(
+    const std::function<std::expected<McuVersion, std::string>()>& ask, const std::function<void()>& wait,
+    int maxAsks) {
+  ReadyWait ready;
+  for (int asked = 1;; ++asked) {
+    const auto version = ask();
+    if (!version) return std::unexpected(version.error());
+    if (!version->busy) return ready;
+    if (asked >= maxAsks) {
+      ready.stillBusy = true;
+      return ready;
+    }
+    wait();
+    ++ready.waits;
+  }
 }
 
 std::optional<DeviceData> parseDeviceDataReply(std::span<const uint8_t> reply) {

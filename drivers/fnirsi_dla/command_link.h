@@ -77,13 +77,40 @@ class CommandLink {
       return std::unexpected(std::move(*refused));
     }
     auto buf = buildDirectCommand(cmd, payload);
+    bool recovered = false;
+    for (;;) {
+      auto sent = writeDirectLocked(cmd, buf, recovered);
+      if (!sent) return std::unexpected(std::move(sent.error()));
+      if (!read_reply) {
+        return std::vector<uint8_t>{};
+      }
+      std::vector<uint8_t> reply(kDirectCommandSize, 0);
+      const auto read = transport_.bulkTransfer(kEndpointCommandIn, reply, 1000);
+      if (!read) {
+        if (changesNoState(cmd) && recoverOnce(recovered, read.error())) continue;
+        return std::unexpected("command reply read failed: " + read.error().text);
+      }
+      reply.resize(*read);
+      return reply;
+    }
+  }
+
+  void recoverCommandEndpoints(std::function<void()> clear_halts) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    clear_halts_ = std::move(clear_halts);
+  }
+
+ private:
+  [[nodiscard]] std::expected<void, std::string> writeDirectLocked(DirectCommand cmd,
+                                                                   std::span<uint8_t> buf, bool& recovered) {
     const int attempts = changesNoState(cmd) ? kQueryWriteAttempts : 1;
     for (int attempt = 1;; ++attempt) {
       const auto written = transport_.bulkTransfer(kEndpointCommandOut, buf, 1000);
       if (written) {
-        break;
+        return {};
       }
       const TransferFailure& failure = written.error();
+      if (recoverOnce(recovered, failure)) continue;
       if (failure.timed_out && write_timeouts_ == WriteTimeoutAnswer::askForReplug) {
         return std::unexpected(std::format("command write failed: {}; {}", failure.text, kWchReplugAdvice));
       }
@@ -102,17 +129,18 @@ class CommandLink {
                           static_cast<unsigned>(cmd), failure.text, attempt + 1, attempts));
       }
     }
-    if (!read_reply) {
-      return std::vector<uint8_t>{};
-    }
-    std::vector<uint8_t> reply(kDirectCommandSize, 0);
-    const auto read = transport_.bulkTransfer(kEndpointCommandIn, reply, 1000);
-    if (!read) {
-      return std::unexpected("command reply read failed: " + read.error().text);
-    }
-    reply.resize(*read);
-    return reply;
   }
+
+  bool recoverOnce(bool& recovered, const TransferFailure& failure) {
+    if (!clear_halts_ || recovered) return false;
+    if (!failure.halted && !(failure.timed_out && failure.transferred == 0)) return false;
+    clear_halts_();
+    recovered = true;
+    if (note_) note_(std::format("command endpoints cleared after {}, sending command again", failure.text));
+    return true;
+  }
+
+ public:
 
   // WHY: shutdown() holds the command lock across teardown so the USB device is never closed under a transfer.
   void shutdown(std::span<const Farewell> farewell, const std::function<void()>& teardown) {
@@ -151,7 +179,7 @@ class CommandLink {
 
   static constexpr bool changesNoState(DirectCommand cmd) {
     return cmd == DirectCommand::kFlush || cmd == DirectCommand::kGetMcuVersion ||
-           cmd == DirectCommand::kGetDeviceData;
+           cmd == DirectCommand::kGetDeviceData || cmd == DirectCommand::kGetStreamState;
   }
 
   std::optional<std::string> refusal() const {
@@ -169,7 +197,12 @@ class CommandLink {
   std::expected<void, std::string> writeFramedLocked(FramedCommand cmd,
                                                      std::span<const uint8_t> payload) {
     auto buf = buildFramedCommand(cmd, payload);
-    if (auto written = transport_.bulkTransfer(kEndpointCommandOut, buf, 2000); !written) {
+    bool recovered = false;
+    auto written = transport_.bulkTransfer(kEndpointCommandOut, buf, 2000);
+    if (!written && recoverOnce(recovered, written.error())) {
+      written = transport_.bulkTransfer(kEndpointCommandOut, buf, 2000);
+    }
+    if (!written) {
       if (written.error().timed_out && write_timeouts_ == WriteTimeoutAnswer::askForReplug) {
         return std::unexpected(std::format("framed command write failed: {}; {}", written.error().text, kWchReplugAdvice));
       }
@@ -180,6 +213,7 @@ class CommandLink {
 
   BulkTransport& transport_;
   std::function<void(std::string_view)> note_;
+  std::function<void()> clear_halts_;
   std::mutex mutex_;
   enum class State { Open, Closing, Closed };
   std::atomic<State> state_{State::Open};

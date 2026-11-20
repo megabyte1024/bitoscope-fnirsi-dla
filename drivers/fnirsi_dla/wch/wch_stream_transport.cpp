@@ -44,7 +44,8 @@ class WchStreamTransport final : public UsbStreamTransport {
     return std::unexpected(UsbError{call.kind == UsbCallKind::noDevice, call.name});
   }
 
-  std::expected<void, std::string> allocate(uint32_t transfers, uint32_t transferBytes) override {
+  std::expected<void, std::string> allocate(uint32_t transfers, uint32_t transferBytes,
+                                            [[maybe_unused]] bool rawIo) override {
     if (port_ != nullptr) return std::unexpected(std::string("WCH stream already has its transfers"));
     if (transfers == 0) return std::unexpected(std::string("WCH stream needs at least one transfer"));
     const auto header = wchReadHeader(endpoint_, transferBytes);

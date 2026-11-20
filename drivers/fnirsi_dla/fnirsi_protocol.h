@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -32,6 +33,7 @@ enum class DirectCommand : uint8_t {
   kFlush = 0x0B,
   kSetResetState = 0x87,
   kGetResetState = 0x88, // WHY: non-functional stub on real firmware; not used
+  kGetStreamState = 0xA3,
 };
 
 constexpr std::array<uint8_t, kDirectCommandSize> buildDirectCommand(
@@ -46,11 +48,25 @@ struct McuVersion {
   int firmware_minor = 0;
   int hardware_version = 0;
   int product_tier = 0;
+  bool own_firmware = false;
+  bool busy = false;
+  uint8_t bootloader_mark = 0;
 };
 
 std::optional<McuVersion> parseMcuVersionReply(std::span<const uint8_t> reply);
 
 std::string connectDescription(const McuVersion& version);
+
+bool asksStreamStateOverControl(const McuVersion& version);
+
+struct ReadyWait {
+  int waits = 0;
+  bool stillBusy = false;
+};
+
+std::expected<ReadyWait, std::string> waitWhileBusy(
+    const std::function<std::expected<McuVersion, std::string>()>& ask, const std::function<void()>& wait,
+    int maxAsks);
 
 struct DeviceData {
   int usb_version = 0;

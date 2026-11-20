@@ -31,7 +31,7 @@ class UsbStreamTransport {
 
   virtual uint64_t nowMs() = 0;
   virtual std::expected<uint64_t, UsbError> readNow(std::span<uint8_t> into, uint32_t timeoutMs) = 0;
-  virtual std::expected<void, std::string> allocate(uint32_t transfers, uint32_t transferBytes) = 0;
+  virtual std::expected<void, std::string> allocate(uint32_t transfers, uint32_t transferBytes, bool rawIo) = 0;
   virtual std::span<const uint8_t> received(uint32_t transfer) const = 0;
   virtual std::expected<void, UsbError> submit(uint32_t transfer) = 0;
   virtual void cancel(uint32_t transfer) = 0;

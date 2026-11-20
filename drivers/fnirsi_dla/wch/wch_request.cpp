@@ -22,6 +22,9 @@ constexpr uint32_t kReadFlag = 0x10000;
 constexpr uint32_t kWriteFlag = 0x20000;
 constexpr size_t kLengthOffset = 4;
 constexpr uint32_t kSetExclusiveFunction = 0x0B;
+constexpr uint32_t kResetInEndpointFunction = 0x0D;
+constexpr uint32_t kResetValueBase = 14;
+constexpr uint32_t kResetValuePerEndpoint = 2;
 constexpr uint32_t kSetTimeoutsFunction = 0x0F;
 constexpr size_t kTimeoutCount = 4;
 
@@ -137,6 +140,21 @@ std::array<uint8_t, kWchCommandBytes> wchSetExclusiveRequest(bool exclusive) {
   put32(request.data(), kSetExclusiveFunction);
   put32(request.data() + kLengthOffset, 1);
   request[kWchHeaderBytes] = exclusive ? 1 : 0;
+  return request;
+}
+
+std::expected<std::array<uint8_t, kWchCommandBytes>, std::string> wchResetInEndpointRequest(uint8_t endpointAddress) {
+  const uint8_t number = endpointAddress & kEndpointNumberMask;
+  if (number < kFirstEndpoint || number > kLastEndpoint) {
+    return std::unexpected(std::format("endpoint {:#04x} is not 1 to {}", endpointAddress, kLastEndpoint));
+  }
+  if ((endpointAddress & kDirectionIn) == 0) {
+    return std::unexpected(std::format("endpoint {:#04x} is OUT: a reset needs an IN endpoint", endpointAddress));
+  }
+  std::array<uint8_t, kWchCommandBytes> request{};
+  put32(request.data(), kResetInEndpointFunction);
+  put32(request.data() + kLengthOffset, sizeof(uint32_t));
+  put32(request.data() + kWchHeaderBytes, kResetValuePerEndpoint * number + kResetValueBase);
   return request;
 }
 

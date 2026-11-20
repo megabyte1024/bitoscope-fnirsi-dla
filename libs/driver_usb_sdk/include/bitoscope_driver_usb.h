@@ -81,9 +81,11 @@ void* bitoscope_usb_libusb_handle(bitoscope_usb_device* usb);
  * bitoscope_fail_capture() first). */
 typedef int (*bitoscope_usb_started_fn)(void* user);
 
-/* IMPLEMENT: Optional: called once, on the capture thread, when the stream has ended and no transfer is in flight
- * any more, unless your device is gone: send your device's stop command here. Anything but BITOSCOPE_OK is logged
- * as a warning; the capture's outcome stays as it is. */
+/* IMPLEMENT: Optional: send your device's stop command here, on the capture thread. It is called when the stream has
+ * ended and no transfer is in flight any more, unless your device is gone. With drain set it is also called once
+ * before the first drain read, with no transfer queued, so a device left sending by an earlier run stops before it
+ * is read: your device may get it while idle, and it must be harmless then. Anything but BITOSCOPE_OK is logged as
+ * a warning; the capture's outcome stays as it is. */
 typedef int (*bitoscope_usb_stop_fn)(void* user);
 
 /* IMPLEMENT: Optional: turns `num_units` whole units of your device's bytes (unit_bytes each, back to back) into
@@ -91,6 +93,13 @@ typedef int (*bitoscope_usb_stop_fn)(void* user);
  * bitoscope_sample_bytes(sink, unit_samples) bytes a unit, at `samples`. BITOSCOPE_OK goes on; anything else fails
  * the capture (bitoscope_fail_capture() first). */
 typedef int (*bitoscope_usb_convert_fn)(void* user, const uint8_t* device_bytes, uint64_t num_units, uint8_t* samples);
+
+/* IMPLEMENT: Optional: called on the capture thread when a transfer of the sample endpoint ends with the endpoint
+ * halted after the first data arrived. received_bytes: your device's bytes delivered before that transfer. Set
+ * *valid_bytes to how many bytes at the start of that transfer are good (from your device's own count) and return
+ * BITOSCOPE_OK: the stream keeps them, does not clear the halt, and goes on (one log line says where). Anything else,
+ * or more bytes than a transfer holds, fails the capture as without this function. */
+typedef int (*bitoscope_usb_halted_fn)(void* user, uint64_t received_bytes, uint64_t* valid_bytes);
 
 /* IMPLEMENT: How bitoscope_stream_usb() streams your device's bulk IN endpoint into the sink. Fill it in (start
  * from all zeros); it is read during the call only. */
@@ -101,9 +110,16 @@ typedef struct bitoscope_usb_stream {
   void* user;                       /* IMPLEMENT: passed to started, convert and stop */
   bitoscope_usb_started_fn started; /* IMPLEMENT: NULL: you started your device before the call */
   /* IMPLEMENT: 1: what the endpoint holds is read and thrown away before any transfer is queued; bytes still
-   * arriving after about 1 s of that fail the capture at sample 0, and the host retries it as start-up loss. Use
-   * it only when your device starts in `started`: the bytes of a device already started would go too. */
+   * arriving after about 1 s of that fail the capture at sample 0, and the host retries it as start-up loss. With
+   * `stop` set, it is called first (see bitoscope_usb_stop_fn). Use drain only when your device starts in
+   * `started`: the bytes of a device already started would go too. */
   int drain;
+  /* IMPLEMENT: 1: on Windows the sample endpoint gets WinUSB's RAW_IO policy while the stream runs, so the USB stack
+   * keeps queued reads going back to back; without it a streaming device with a small FIFO (the FX2) overflows
+   * between two reads at 4 MHz and above. Every transfer is then a multiple of the endpoint's packet size (this
+   * SDK's sizes are multiples of 1024) and the driver makes no other transfer on the endpoint during the stream.
+   * Ignored where there is no RAW_IO. 0: not asked for. */
+  int raw_io;
   /* IMPLEMENT: Samples thrown away at the start of the stream (a settling time, say), rounded up to whole
    * units: unit_samples with convert, else 8 samples in BITOSCOPE_CHANNEL_MAJOR and 1 in BITOSCOPE_SAMPLE_MAJOR. */
   uint64_t preroll_samples;
@@ -124,6 +140,7 @@ typedef struct bitoscope_usb_stream {
   uint32_t unit_samples;
   const char* device_name; /* IMPLEMENT: names your device in messages ("DLA was disconnected"); NULL: "USB device" */
   bitoscope_usb_stop_fn stop; /* IMPLEMENT: NULL: nothing is called */
+  bitoscope_usb_halted_fn halted; /* IMPLEMENT: NULL: an endpoint halt fails the capture */
 } bitoscope_usb_stream;
 
 #define bitoscope_stream_usb(sink, stream) bitoscope_stream_usb_sized((sink), (stream), sizeof(*(stream)))

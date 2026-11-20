@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "number_text.h"
+#include "own_boot_update.h"
 
 namespace fnirsi {
 
@@ -37,6 +38,10 @@ constexpr uint8_t kFpgaStart = 0x85;
 constexpr uint8_t kFpgaChunk = 0x86;
 
 void sleepFor(std::chrono::milliseconds duration) { std::this_thread::sleep_for(duration); }
+
+std::chrono::milliseconds steadyNow() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch());
+}
 
 std::vector<uint8_t> padded(std::initializer_list<uint8_t> head) {
   std::vector<uint8_t> packet(kPacketSize, 0x00);
@@ -86,18 +91,19 @@ uint32_t milliseconds(std::chrono::milliseconds duration) { return static_cast<u
 }
 
 FirmwareFlasher::FirmwareFlasher(UpdateTransport& transport, FlashImages images, FlashEvents events,
-                                 FlashTiming timing, FlashLimits limits, FlashSleep sleep)
+                                 FlashTiming timing, FlashLimits limits, FlashSleep sleep, FlashClock clock)
     : transport_(transport),
       images_(std::move(images)),
       events_(std::move(events)),
       timing_(timing),
       limits_(limits),
-      sleep_(sleep ? std::move(sleep) : FlashSleep(&sleepFor)) {}
+      sleep_(sleep ? std::move(sleep) : FlashSleep(&sleepFor)),
+      clock_(clock ? std::move(clock) : FlashClock(&steadyNow)) {}
 
 FlashResult FirmwareFlasher::run() {
-  if (images_.mcu.empty() || images_.fpga.empty()) {
-    return finish(FlashOutcome::kFailed, "firmware image is empty: nothing was sent to analyzer");
-  }
+  const bool imageMissing = images_.single_image ? images_.mcu.empty() == images_.fpga.empty()
+                                                : images_.mcu.empty() || images_.fpga.empty();
+  if (imageMissing) return finish(FlashOutcome::kFailed, "firmware image is empty: nothing was sent to analyzer");
   const size_t longestName = (std::max)(images_.mcu_wire_name.size(), images_.fpga_wire_name.size());
   if (kImageStartHeader + longestName >= kPacketSize) {
     return finish(FlashOutcome::kFailed, "firmware image name is too long: nothing was sent to analyzer");
@@ -105,6 +111,11 @@ FlashResult FirmwareFlasher::run() {
   progress_.bytes_total = images_.mcu.size() + images_.fpga.size();
 
   const Step<void> flashed = flash();
+  if (own_result_) {
+    std::lock_guard lock(mutex_);
+    finished_ = true;
+    return *own_result_;
+  }
   if (flashed) {
     return finish(FlashOutcome::kDone,
                   std::format("firmware updated in attempt {} of {}", progress_.attempt, limits_.attempts));
@@ -126,8 +137,11 @@ FlashResult FirmwareFlasher::run() {
                     std::format("update cancelled, but analyzer did not return to its program: unplug and plug in "
                                 "analyzer{}",
                                 captureNote()));
+    case Stop::kLeave:
+      return finish(FlashOutcome::kFailed, std::format("update refused: {}", stop.why));
     case Stop::kRestart:
     case Stop::kFail:
+    case Stop::kOwnBootloader:
       break;
   }
   if (leaveInProgram()) {
@@ -158,6 +172,7 @@ FirmwareFlasher::Step<void> FirmwareFlasher::flash() {
   std::string lastWhy;
   for (int attempt = 1; attempt <= limits_.attempts; ++attempt) {
     progress_.attempt = attempt;
+    progress_.attempts = limits_.attempts;
     progress_.bytes_sent = 0;
     progress_.phase = FlashPhase::kPreparing;
     report();
@@ -181,6 +196,7 @@ FirmwareFlasher::Step<void> FirmwareFlasher::attemptOnce(std::optional<McuVersio
     mode = *version;
   }
   if (!mode->application_running) {
+    if (auto routed = routeByBootloader(*mode, false); !routed) return routed;
     if (auto reset = resetInto(false); !reset) return reset;
     auto version = queryVersion();
     if (!version) return std::unexpected(version.error());
@@ -199,6 +215,7 @@ FirmwareFlasher::Step<void> FirmwareFlasher::attemptOnce(std::optional<McuVersio
   if (mode->application_running || mode->next_start != NextStart::kBootloader) {
     return std::unexpected(Interrupt{Stop::kFail, "analyzer did not enter its bootloader after reset"});
   }
+  if (auto routed = routeByBootloader(*mode, true); !routed) return routed;
   sleep_(timing_.phase_pause);
   if (auto sent = sendImage(Image::kMcu); !sent) return sent;
   sleep_(timing_.phase_pause);
@@ -254,6 +271,54 @@ FirmwareFlasher::Step<void> FirmwareFlasher::sendImage(Image image) {
     report();
   }
   return {};
+}
+
+FirmwareFlasher::Step<void> FirmwareFlasher::routeByBootloader(const McuVersion& version, bool entered_from_program) {
+  if (version.bootloader_mark == kOwnBootloaderMark) return runOwnBootloader(entered_from_program);
+  if (version.bootloader_mark != kFnirsiBootloaderMark) {
+    return std::unexpected(
+        Interrupt{entered_from_program ? Stop::kFail : Stop::kLeave,
+                  std::format("analyzer runs unknown bootloader (byte 9 of version reply is {}); nothing written",
+                              version.bootloader_mark)});
+  }
+  if (images_.mcu.empty() || images_.fpga.empty()) {
+    return std::unexpected(Interrupt{Stop::kFail,
+                                     "FNIRSI bootloader takes only complete firmware file with MCU and FPGA image; "
+                                     "nothing written"});
+  }
+  return {};
+}
+
+FirmwareFlasher::Step<void> FirmwareFlasher::runOwnBootloader(bool entered_from_program) {
+  OwnBootHooks hooks;
+  hooks.cancel_requested = [this] {
+    std::lock_guard lock(mutex_);
+    return cancel_requested_;
+  };
+  hooks.set_unsafe_to_stop = [this](bool unsafe) {
+    std::lock_guard lock(mutex_);
+    fpga_damaged_ = unsafe;
+  };
+  hooks.images_done = [this] {
+    std::lock_guard lock(mutex_);
+    images_done_ = true;
+    fpga_in_progress_ = false;
+  };
+  hooks.progress = [this](FlashPhase phase, uint64_t bytes_sent, int attempt) {
+    progress_.phase = phase;
+    progress_.bytes_sent = bytes_sent;
+    progress_.attempt = attempt;
+    progress_.attempts = limits_.own_image_attempts;
+    report();
+  };
+  hooks.log = [this](std::string_view line) { log(line); };
+  std::optional<OwnBootPart> mcu;
+  if (!images_.mcu.empty()) mcu = OwnBootPart{images_.mcu_wire_name, images_.mcu};
+  std::optional<OwnBootPart> fpga;
+  if (!images_.fpga.empty()) fpga = OwnBootPart{images_.fpga_wire_name, images_.fpga};
+  OwnBootUpdate update(transport_, std::move(mcu), std::move(fpga), std::move(hooks), timing_, limits_, sleep_, clock_);
+  own_result_ = update.run(entered_from_program);
+  return std::unexpected(Interrupt{Stop::kOwnBootloader, {}});
 }
 
 FirmwareFlasher::Step<void> FirmwareFlasher::finishInProgram() {

@@ -26,8 +26,9 @@ to each unit, with no setup. The unit's name says which: "FNIRSI DLA-16 Plus (Wi
   usually not needed.
 - **WCH's own driver** ("USB CH372/CH375", the one the manufacturer's application installs): up to 1.6 Gbit/s
   kept exactly. 2 Gbit/s runs with a warning and fails loudly if delivery falls behind; nothing broken is saved.
-  After a failed capture the analyzer must be unplugged and plugged in again. While the manufacturer's
-  application (DLA-Logic) runs, the unit is listed as in use.
+  After a failed capture with FNIRSI's firmware the analyzer must be unplugged and plugged in again; with the open
+  source firmware (`fnirsi-dla-firmware`) the driver resets the endpoint after a stall and the next capture starts
+  at once. While the manufacturer's application (DLA-Logic) runs, the unit is listed as in use.
 
 To switch: Device Manager > the analyzer > Update driver > Browse my computer > Let me pick from a list, then
 choose the other driver. Then unplug and plug in the analyzer: right after a switch it often refuses commands

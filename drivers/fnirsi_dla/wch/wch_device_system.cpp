@@ -126,6 +126,15 @@ class WchDeviceSystem final : public UsbDeviceSystem, public WchRoute, private W
     return makeWchStreamTransport(*this, endpoint);
   }
 
+  UsbCall resetInEndpoint(uint8_t endpointAddress) override {
+    const auto request = wchResetInEndpointRequest(endpointAddress);
+    if (!request) return UsbCall{UsbCallKind::other, request.error()};
+    const std::lock_guard lock(commandMutex_);
+    if (stranded_) return UsbCall{UsbCallKind::other, kStrandedText};
+    if (!open_) return UsbCall{UsbCallKind::other, "WCH device not open"};
+    return setting(*request);
+  }
+
  private:
   UsbCall beginStream(uint32_t driverTimeoutMs) override {
     const std::lock_guard lock(commandMutex_);

@@ -70,16 +70,30 @@ fw::Outcome outcomeOf(FlashOutcome outcome) {
   return fw::Outcome::needsReplug;
 }
 
-fw::Verdict verdictOf(FitRefusalKind kind) {
+fw::Verdict verdictOf(PartsRefusalKind kind) {
   switch (kind) {
-    case FitRefusalKind::kAnalyzerModelUnknown:
+    case PartsRefusalKind::kAnalyzerModelUnknown:
       return fw::Verdict::modelUnknown;
-    case FitRefusalKind::kUnknownFile:
+    case PartsRefusalKind::kUnknownFile:
       return fw::Verdict::unknownFile;
-    case FitRefusalKind::kOtherModel:
+    case PartsRefusalKind::kUnusable:
+      return fw::Verdict::unreadable;
+    case PartsRefusalKind::kOtherModel:
       break;
   }
   return fw::Verdict::otherModel;
+}
+
+std::string_view layoutText(FileLayout layout) {
+  switch (layout) {
+    case FileLayout::kMcuImage:
+      return "MCU image";
+    case FileLayout::kFpgaImage:
+      return "FPGA image";
+    case FileLayout::kContainer:
+      break;
+  }
+  return "firmware file";
 }
 
 void publish(const fw::FirmwareUpdateEvent& event) {
@@ -209,27 +223,25 @@ std::optional<std::string> DlaFirmwareUpdate::uploadIncomplete(uint32_t upload_i
 
 DlaFirmwareUpdate::Verdict DlaFirmwareUpdate::judge(std::string_view named_model, FlashConfirmations confirmed) const {
   Verdict verdict;
-  auto file = parseFirmwareFile(upload_);
-  if (!file) {
-    verdict.reply = fw::CheckReply{fw::Verdict::unreadable, {}, {}, file.error()};
+  auto parts = splitFirmwareFile(upload_);
+  if (!parts) {
+    verdict.reply = fw::CheckReply{fw::Verdict::unreadable, {}, {}, parts.error()};
     return verdict;
   }
-  verdict.reply.sha256.assign(file->sha256.begin(), file->sha256.end());
-  const std::optional<FirmwareModel> fileModel =
-      file->known_model ? file->known_model : firmwareModelHintOf(upload_name_);
-  if (fileModel) verdict.reply.fileModel = modelText(*fileModel);
+  verdict.reply.sha256.assign(parts->sha256.begin(), parts->sha256.end());
   const std::optional<FirmwareModel> analyzer =
       firmwareModelOfDevice(setup_.in_bootloader ? named_model : std::string_view(setup_.device_name));
-  const auto fit = checkFirmwareFitsAnalyzer(*file, upload_name_, analyzer, confirmed);
-  if (!fit) {
-    verdict.reply.verdict = verdictOf(fit.error().kind);
-    verdict.reply.message = fit.error().message;
+  const PartsVerdict judged = judgeFirmwareParts(*parts, upload_, upload_name_, analyzer, confirmed);
+  if (judged.file_model) verdict.reply.fileModel = modelText(*judged.file_model);
+  if (!judged.fit) {
+    verdict.reply.verdict = verdictOf(judged.fit.error().kind);
+    verdict.reply.message = judged.fit.error().message;
     return verdict;
   }
   verdict.reply.verdict = fw::Verdict::fits;
-  verdict.reply.message = std::format("This firmware file suits your {}-channel analyzer. You can start update.",
-                                      *analyzer == FirmwareModel::k16Channels ? 16 : 32);
-  verdict.file = std::move(*file);
+  verdict.reply.message = std::format("This {} suits your {}-channel analyzer. You can start update.",
+                                      layoutText(parts->layout), *analyzer == FirmwareModel::k16Channels ? 16 : 32);
+  verdict.parts = std::move(*parts);
   return verdict;
 }
 
@@ -247,14 +259,22 @@ DlaFirmwareUpdate::Answer DlaFirmwareUpdate::start(const fw::Start& start) {
   if (!setup_.make_transport && !transport_) return refused(std::string(kNoTransport));
   if (auto incomplete = uploadIncomplete(start.uploadId)) return refused(std::move(*incomplete));
   const Verdict verdict = judge(start.model, FlashConfirmations{start.confirmUnknownFile, start.confirmOtherModel});
-  if (!verdict.file) {
+  if (!verdict.parts) {
     const auto payload = fw::encodeCheckReply(verdict.reply);
     return plugin::CommandAnswer{false, verdict.reply.message, payload ? *payload : std::vector<uint8_t>{}};
   }
-  const FirmwareFile& file = *verdict.file;
-  launch(FlashImages{file.mcu.wire_name, imageBytes(upload_, file.mcu), file.fpga.wire_name,
-                     imageBytes(upload_, file.fpga)},
-         false);
+  const FirmwareParts& parts = *verdict.parts;
+  FlashImages images;
+  if (parts.mcu) {
+    images.mcu_wire_name = parts.mcu->wire_name;
+    images.mcu = imageBytes(upload_, *parts.mcu);
+  }
+  if (parts.fpga) {
+    images.fpga_wire_name = parts.fpga->wire_name;
+    images.fpga = imageBytes(upload_, *parts.fpga);
+  }
+  images.single_image = parts.layout != FileLayout::kContainer;
+  launch(std::move(images), false);
   return plugin::CommandAnswer{true, "firmware update started", {}};
 }
 
@@ -334,7 +354,7 @@ void DlaFirmwareUpdate::onProgress(const FlashProgress& progress) {
   const auto now = std::chrono::steady_clock::now();
   fw::FirmwareUpdateEvent event =
       fw::Progress{phaseOf(progress.phase), imageNameOf(progress.phase), progress.bytes_sent, progress.bytes_total,
-                   static_cast<uint32_t>(progress.attempt), static_cast<uint32_t>(FlashLimits{}.attempts),
+                   static_cast<uint32_t>(progress.attempt), static_cast<uint32_t>(progress.attempts),
                    static_cast<uint32_t>(progress.resends)};
   bool send = false;
   {

@@ -31,7 +31,7 @@
 namespace {
 
 struct Options {
-  std::string id = "usb-2-2";
+  std::string id;
   uint64_t rate_hz = 1'000'000;
   uint32_t mask = 0x1;
   uint64_t mib = 16;
@@ -50,7 +50,7 @@ void usage() {
       "usage: fnirsi_dla_raw_probe [options]\n"
       "Asks DLA for RAW request (no driver rules) and reads bytes back; PWM of P0-P3 must be\n"
       "running into D0-D3 (bitoscope_cli --pwm-start), and fnirsi_dla driver must not be running.\n"
-      "  --id ID           device id, as fnirsi_dla lists it, default usb-2-2\n"
+      "  --id ID           device id, as fnirsi_dla lists it, default: only analyzer found\n"
       "  --rate-hz N       sample rate, default 1000000\n"
       "  --mask M          RAW device channel mask sent to device, decimal or 0x hex, default 0x1\n"
       "  --mib N           stop after N MiB of stream, default 16\n"
@@ -140,7 +140,7 @@ std::expected<bitoscope::plugin::FoundDevice, std::string> placeOf(const std::st
   if (!found) return std::unexpected(found.error());
   std::string ids;
   for (const sdk::FoundUsbDevice& device : *found) {
-    if (device.id == id) {
+    if (id.empty() ? found->size() == 1 : device.id == id) {
       bitoscope::plugin::FoundDevice unit;
       unit.id = device.id;
       unit.location = bitoscope::plugin::toLocation(bitoscope::plugin::UsbLocation{
@@ -149,7 +149,8 @@ std::expected<bitoscope::plugin::FoundDevice, std::string> placeOf(const std::st
     }
     ids += (ids.empty() ? "" : ", ") + device.id;
   }
-  return std::unexpected("no DLA with id " + id + "; found: " + (ids.empty() ? std::string("none") : ids));
+  const std::string expected = id.empty() ? std::string("need exactly one DLA without --id") : "no DLA with id " + id;
+  return std::unexpected(expected + "; found: " + (ids.empty() ? std::string("none") : ids));
 }
 
 struct RawStream {
@@ -181,7 +182,8 @@ void drainSampleEndpoint(bitoscope::plugin_c_sdk::UsbStreamTransport& transport)
 std::expected<RawStream, std::string> readRawStream(bitoscope::plugin_c_sdk::UsbStreamTransport& transport,
                                                     const Options& o) {
   namespace sdk = bitoscope::plugin_c_sdk;
-  if (auto allocated = transport.allocate(o.transfers, o.transfer_kib * 1024); !allocated) {
+  constexpr bool kRawIo = false;
+  if (auto allocated = transport.allocate(o.transfers, o.transfer_kib * 1024, kRawIo); !allocated) {
     return std::unexpected(allocated.error());
   }
   std::deque<uint32_t> order;
@@ -248,7 +250,7 @@ std::expected<RawStream, std::string> readRawStream(bitoscope::plugin_c_sdk::Usb
 
 int run(int argc, char** argv) {
   // WHY: Stdout is line-buffered even when redirected: a run killed by timeout keeps what it printed.
-  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+  std::setvbuf(stdout, nullptr, _IOLBF, 4096);
   const auto options = parse(argc, argv);
   if (!options || options->help) {
     usage();

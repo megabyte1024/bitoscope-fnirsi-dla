@@ -4,9 +4,13 @@
 
 #include "fnirsi_device.h"
 
+#include <chrono>
 #include <string>
 #include <string_view>
+#include <thread>
 
+#include "halt_crossing.h"
+#include "own_boot_update.h"
 #include "wch/wch_device_system.h"
 #include "wch/wch_route.h"
 
@@ -23,6 +27,10 @@ plugin::DeviceFailure otherFailure(std::string detail) { return {plugin::DeviceP
 bool isInEndpoint(uint8_t endpoint) {
   constexpr uint8_t kDirectionIn = 0x80;
   return (endpoint & kDirectionIn) != 0;
+}
+
+bool runsOwnBootloader(const McuVersion& version) {
+  return !version.application_running && version.bootloader_mark == kOwnBootloaderMark;
 }
 
 }
@@ -110,15 +118,18 @@ std::expected<void, plugin::DeviceFailure> FnirsiDevice::connectOpened() {
   link_.reopen();
   in_bootloader_ = false;
 
-  const plugin::UsbSpeed speed = usb_.speed();
-  if (speed != plugin::UsbSpeed::super && speed != plugin::UsbSpeed::superPlus) {
+  const auto refuseLinkSpeed = [this] {
     close();
     return std::unexpected(otherFailure("device is not on USB 3.0 SuperSpeed (or better) link - every "
                                         "rate/buffer-size fact this driver relies on was only ever measured "
                                         "at USB 3.0+; refusing to continue at lower link speed"));
-  }
+  };
+  const plugin::UsbSpeed speed = usb_.speed();
+  const bool superSpeed = speed == plugin::UsbSpeed::super || speed == plugin::UsbSpeed::superPlus;
+  if (!superSpeed && speed != plugin::UsbSpeed::high) return refuseLinkSpeed();
 
   auto info = identify();
+  if (!superSpeed && !(info && runsOwnBootloader(info->mcu_version))) return refuseLinkSpeed();
   if (!info) {
     close();
     return std::unexpected(otherFailure(info.error()));
@@ -127,6 +138,12 @@ std::expected<void, plugin::DeviceFailure> FnirsiDevice::connectOpened() {
   if (!info_.mcu_version.application_running) {
     in_bootloader_ = true;
     return {};
+  }
+  if (info_.mcu_version.own_firmware) {
+    link_.recoverCommandEndpoints([this] {
+      (void)usb_.clearHalt(kEndpointCommandOut);
+      (void)usb_.clearHalt(kEndpointCommandIn);
+    });
   }
 
   for (const HousekeepingStep& step : connectHousekeeping()) {
@@ -174,11 +191,68 @@ std::expected<void, std::string> FnirsiDevice::sendFramed(
   return link_.sendFramed(cmd, payload);
 }
 
+void FnirsiDevice::waitForFpgaSteps() {
+  constexpr int kReadyAsks = 50;
+  constexpr auto kReadyPause = std::chrono::milliseconds(100);
+  const auto ask = [this]() -> std::expected<McuVersion, std::string> {
+    const auto reply = link_.sendDirect(DirectCommand::kGetMcuVersion, {}, true);
+    if (!reply) return std::unexpected(reply.error());
+    const auto version = parseMcuVersionReply(*reply);
+    if (!version) return std::unexpected("version reply not understood");
+    return *version;
+  };
+  const auto ready = waitWhileBusy(ask, [kReadyPause] { std::this_thread::sleep_for(kReadyPause); }, kReadyAsks);
+  if (!ready) {
+    bitoscope_log(BITOSCOPE_LOG_WARNING, "version query before start failed: %s", ready.error().c_str());
+  } else if (ready->stillBusy) {
+    bitoscope_log(BITOSCOPE_LOG_WARNING, "analyzer still busy with FPGA set-up after %d ms; starting anyway",
+                  static_cast<int>(ready->waits * kReadyPause.count()));
+  } else if (ready->waits > 0) {
+    bitoscope_log(BITOSCOPE_LOG_INFO, "waited %d ms for analyzer to finish FPGA set-up",
+                  static_cast<int>(ready->waits * kReadyPause.count()));
+  }
+}
+
 void FnirsiDevice::streamSamples(plugin::Sink& sink, const plugin::UsbStream& stream) {
+  endpoint_reset_ = {};
   plugin::UsbStream from_this_device = stream;
   from_this_device.device = &usb_;
   from_this_device.endpoint = kEndpointSampleDataIn;
+  const McuVersion& version = info_.mcu_version;
+  const bool overControl = asksStreamStateOverControl(version);
+  const auto askStreamState = [this, overControl]() -> std::expected<std::vector<uint8_t>, std::string> {
+    if (!overControl) return link_.sendDirect(static_cast<DirectCommand>(kStreamHaltCommand), {}, true);
+    return askStreamStateOverControl(
+        [this](uint8_t requestType, uint8_t request, std::span<uint8_t> data) -> std::expected<size_t, std::string> {
+          constexpr uint32_t kControlTimeoutMs = 1000;
+          const auto received = usb_.control(plugin::UsbSetup{requestType, request, 0, 0}, data, kControlTimeoutMs);
+          if (!received) return std::unexpected(received.error().text);
+          return *received;
+        });
+  };
+  bool haltAsked = false;
+  if (version.own_firmware) waitForFpgaSteps();
+  if (version.own_firmware) {
+    from_this_device.halted = [askStreamState, &haltAsked,
+                               haltsSeen = uint32_t{0}](uint64_t receivedBytes) mutable {
+      haltAsked = true;
+      const auto wait = [] { std::this_thread::sleep_for(std::chrono::milliseconds(5)); };
+      return askValidBytes(askStreamState, wait, haltsSeen, receivedBytes);
+    };
+  }
   plugin::streamUsb(sink, from_this_device);
+  if (haltAsked && sink.failed() && usb_driver_ == DlaUsbDriver::wch) {
+    const auto reset = wch::resetWchInEndpoint(usb_, kEndpointSampleDataIn);
+    endpoint_reset_ = reset ? EndpointReset{EndpointResetOutcome::done, {}}
+                            : EndpointReset{EndpointResetOutcome::failed, reset.error()};
+  }
+  if (!version.own_firmware) return;
+  const auto reply = askStreamState();
+  if (!reply) return;
+  const auto state = parseStreamHalt(*reply);
+  if (!state) return;
+  const std::string fault = faultText(*state);
+  if (!fault.empty()) bitoscope_log(BITOSCOPE_LOG_WARNING, "%s", fault.c_str());
 }
 
 }
